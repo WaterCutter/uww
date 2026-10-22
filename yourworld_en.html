@@ -1,0 +1,2101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Your World · Web Edition (Redstone Expansion)</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { width:100%; height:100%; overflow:hidden; background:#87ceeb;
+    font-family:"PingFang SC","Microsoft YaHei",system-ui,sans-serif; color:#fff; }
+  #gl { display:block; width:100%; height:100%; }
+
+  #cross { position:fixed; left:50%; top:50%; width:20px; height:20px; margin:-10px 0 0 -10px;
+    pointer-events:none; opacity:.85; }
+  #cross:before, #cross:after { content:""; position:absolute; background:#fff; box-shadow:0 0 2px rgba(0,0,0,.8); }
+  #cross:before { left:9px; top:0; width:2px; height:20px; }
+  #cross:after { top:9px; left:0; height:2px; width:20px; }
+
+  #hotbar { position:fixed; left:50%; bottom:16px; transform:translateX(-50%);
+    display:flex; flex-direction:column; align-items:center; gap:5px; pointer-events:none; }
+  #slots { display:flex; gap:5px; padding:5px; background:rgba(0,0,0,.38); border-radius:8px; backdrop-filter:blur(4px); }
+  .slot { width:56px; height:56px; border:2px solid rgba(255,255,255,.32); border-radius:6px; position:relative;
+    display:flex; align-items:flex-end; justify-content:center; font-size:10px; padding-bottom:3px;
+    text-shadow:0 1px 2px #000; text-align:center; line-height:1.15; overflow:hidden; }
+  .slot.sel { border-color:#fff; box-shadow:0 0 10px rgba(255,255,255,.75); transform:scale(1.08); }
+  .slot i { position:absolute; left:3px; top:1px; font-style:normal; font-size:9px; opacity:.85; }
+  #pageName { font-size:11px; background:rgba(0,0,0,.4); padding:3px 12px; border-radius:10px; letter-spacing:1px; }
+
+  #hud { position:fixed; left:12px; top:10px; font-size:12px; line-height:1.75;
+    text-shadow:0 1px 3px rgba(0,0,0,.9); pointer-events:none; }
+  #hud b { color:#ffe680; font-weight:600; }
+  #tip { position:fixed; right:12px; top:10px; font-size:11px; line-height:1.7; text-align:right;
+    text-shadow:0 1px 3px rgba(0,0,0,.9); pointer-events:none; opacity:.9; }
+  #tip b { color:#ff8a80; }
+
+  #flash { position:fixed; inset:0; background:#fff; opacity:0; pointer-events:none; }
+
+  #mask { position:fixed; inset:0; background:rgba(10,20,30,.78); display:flex; flex-direction:column;
+    align-items:center; justify-content:center; cursor:pointer; backdrop-filter:blur(3px); z-index:10; }
+  #mask h1 { font-size:32px; letter-spacing:2px; }
+  #mask p { font-size:12px; opacity:.8; margin:4px 0 14px; }
+  #mask .keys { font-size:12.5px; line-height:1.95; background:rgba(0,0,0,.32); padding:14px 22px; border-radius:10px; }
+  #mask .keys span { display:inline-block; min-width:112px; color:#ffe680; }
+  #mask .go { margin-top:18px; font-size:15px; background:#4caf50; padding:10px 26px; border-radius:24px; }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="cross"></div>
+<div id="flash"></div>
+<div id="hotbar"><div id="pageName">Building Blocks</div><div id="slots"></div></div>
+<div id="hud"></div>
+<div id="tip"></div>
+<div id="mask">
+  <h1>Your World · Web Edition</h1>
+  <p>Native WebGL single file · 320×96×320 world · Glass / Water / TNT / Redstone set / Flint &amp; Steel</p>
+  <div class="keys">
+    <div><span>W A S D</span>Move&nbsp;&nbsp;<span>Space</span>Jump (rise in water)&nbsp;&nbsp;<span>Shift</span>Sprint</div>
+    <div><span>Mouse</span>Look&nbsp;&nbsp;<span>Left click</span>Break block&nbsp;&nbsp;<span>Right click</span>Place block / Flip lever</div>
+    <div><span>1-8 / Wheel</span>Pick block&nbsp;&nbsp;<span>Tab</span>Switch hotbar page&nbsp;&nbsp;<span>F</span>Fly</div>
+    <div><span>R-click lever</span>On / Off&nbsp;&nbsp;<span>R-click repeater</span>Set delay&nbsp;&nbsp;<span>H</span>Help&nbsp;&nbsp;<span>Esc</span>Release mouse</div>
+    <div style="margin-top:6px;color:#ffd08a">Ignite: hold <b>Flint &amp; Steel</b> (Tab to page 2, slot 1) and right-click TNT or the ground</div>
+  </div>
+  <div class="go">Click to start</div>
+</div>
+
+<script>
+(function () {
+'use strict';
+
+/* ======================= 1. Block Definitions ======================= */
+
+var AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, WOOD = 5, LEAVES = 6,
+    GLASS = 7, WATER = 8, TNT = 9, REDSTONE_ORE = 10,
+    REDSTONE_WIRE = 11, REDSTONE_TORCH = 12, REDSTONE_BLOCK = 13, LEVER = 14,
+    REPEATER = 15, LAMP = 16, PISTON = 17, PISTON_ARM = 18,
+    FIRE = 19, FLINT_STEEL = 20;   // FLINT_STEEL is a held tool, never placed into the world
+
+// Shape (bounding box inside the unit cube [x0,y0,z0,x1,y1,z1])
+var S_FULL = [0, 0, 0, 1, 1, 1];
+var S_WIRE = [0, 0, 0, 1, 0.125, 1];
+var S_REP = [0, 0, 0, 1, 0.1875, 1];
+var S_TORCH = [0.42, 0, 0.42, 0.58, 0.62, 0.58];
+var S_LEVER = [0.32, 0, 0.32, 0.68, 0.42, 0.68];
+var S_FIRE = [0.06, 0, 0.06, 0.94, 1, 0.94];
+
+var SHAPE = [];
+SHAPE[GRASS] = S_FULL; SHAPE[DIRT] = S_FULL; SHAPE[STONE] = S_FULL; SHAPE[SAND] = S_FULL;
+SHAPE[WOOD] = S_FULL; SHAPE[LEAVES] = S_FULL; SHAPE[GLASS] = S_FULL; SHAPE[WATER] = S_FULL;
+SHAPE[TNT] = S_FULL; SHAPE[REDSTONE_ORE] = S_FULL;
+SHAPE[REDSTONE_WIRE] = S_WIRE; SHAPE[REPEATER] = S_REP;
+SHAPE[REDSTONE_TORCH] = S_TORCH; SHAPE[LEVER] = S_LEVER;
+SHAPE[LAMP] = S_FULL; SHAPE[PISTON] = S_FULL; SHAPE[PISTON_ARM] = S_FULL;
+SHAPE[FIRE] = S_FIRE;
+
+// Whether it occludes (used for hidden-face culling and AO)
+// Key point: only blocks that fill the whole cube may occlude their neighbours.
+// Levers / torches / redstone wire / repeaters occupy just a sliver of the cell, so treating
+// them as occluders would strip the whole face off whatever touches them and leave a hole
+// behind (it would look like the neighbour "turned transparent").
+function isOpaque(b) {
+  if (b === AIR || b === WATER || b === GLASS || b === FIRE) return false;
+  return SHAPE[b] === S_FULL;
+}
+// Whether it takes part in collision (only full blocks get a hitbox; wire / torches / levers / repeaters / fire are walk-through)
+function isCollide(b) {
+  if (b === AIR || b === WATER) return false;
+  return SHAPE[b] === S_FULL;
+}
+// Whether the crosshair can target it (water and fire cannot be targeted; everything else, including levers / wire / repeaters / torches, is right-clickable)
+function isTarget(b) { return b !== AIR && b !== WATER && b !== FIRE; }
+// Whether it is translucent (needs the transparent render pass)
+function isTranslucent(b) { return b === WATER || b === GLASS || b === FIRE; }
+// Redstone components
+function isRsDevice(b) {
+  return b === REDSTONE_WIRE || b === REDSTONE_TORCH || b === REDSTONE_BLOCK || b === LEVER ||
+         b === REPEATER || b === LAMP || b === PISTON || b === PISTON_ARM || b === TNT;
+}
+
+// Atlas tile indices (4 columns × 7 rows)
+var T_GRASS_TOP = 0, T_GRASS_SIDE = 1, T_DIRT = 2, T_STONE = 3,
+    T_SAND = 4, T_WOOD_SIDE = 5, T_WOOD_TOP = 6, T_LEAVES = 7,
+    T_GLASS = 8, T_WATER = 9, T_TNT_SIDE = 10, T_TNT_TOP = 11,
+    T_RS_BLOCK = 12, T_RS_WIRE = 13, T_LAMP = 14, T_RS_TORCH = 15,
+    T_REPEATER = 16, T_PISTON_SIDE = 17, T_PISTON_FACE = 18, T_PISTON_ARM = 19,
+    T_LEVER_OFF = 20, T_LEVER_ON = 21, T_RS_ORE = 22, T_SPARE = 23,
+    T_FIRE = 24, T_FLINT = 25,
+    T_WATER_TOP = 26, T_WATER_SIDE = 27, T_WATER_BOTTOM = 28;
+
+// Water level: a source is WATER_MAX, -1 per block outwards, minimum 1 (so it spreads at most 9 blocks)
+var WATER_MAX = 10;
+
+// [top, bottom, side]
+var BLOCK_FACE = [];
+BLOCK_FACE[GRASS] = [T_GRASS_TOP, T_DIRT, T_GRASS_SIDE];
+BLOCK_FACE[DIRT] = [T_DIRT, T_DIRT, T_DIRT];
+BLOCK_FACE[STONE] = [T_STONE, T_STONE, T_STONE];
+BLOCK_FACE[SAND] = [T_SAND, T_SAND, T_SAND];
+BLOCK_FACE[WOOD] = [T_WOOD_TOP, T_WOOD_TOP, T_WOOD_SIDE];
+BLOCK_FACE[LEAVES] = [T_LEAVES, T_LEAVES, T_LEAVES];
+BLOCK_FACE[GLASS] = [T_GLASS, T_GLASS, T_GLASS];
+BLOCK_FACE[WATER] = [T_WATER_TOP, T_WATER_BOTTOM, T_WATER_SIDE];
+BLOCK_FACE[TNT] = [T_TNT_TOP, T_TNT_TOP, T_TNT_SIDE];
+BLOCK_FACE[REDSTONE_ORE] = [T_RS_ORE, T_RS_ORE, T_RS_ORE];
+BLOCK_FACE[REDSTONE_WIRE] = [T_RS_WIRE, T_RS_WIRE, T_RS_WIRE];
+BLOCK_FACE[REDSTONE_TORCH] = [T_RS_TORCH, T_RS_TORCH, T_RS_TORCH];
+BLOCK_FACE[REDSTONE_BLOCK] = [T_RS_BLOCK, T_RS_BLOCK, T_RS_BLOCK];
+BLOCK_FACE[LEVER] = [T_LEVER_OFF, T_LEVER_OFF, T_LEVER_OFF];
+BLOCK_FACE[REPEATER] = [T_REPEATER, T_REPEATER, T_REPEATER];
+BLOCK_FACE[LAMP] = [T_LAMP, T_LAMP, T_LAMP];
+BLOCK_FACE[PISTON] = [T_PISTON_SIDE, T_PISTON_SIDE, T_PISTON_SIDE];
+BLOCK_FACE[PISTON_ARM] = [T_PISTON_ARM, T_PISTON_ARM, T_PISTON_ARM];
+BLOCK_FACE[FIRE] = [T_FIRE, T_FIRE, T_FIRE];
+
+var BLOCK_NAME = [];
+BLOCK_NAME[GRASS] = 'Grass Block'; BLOCK_NAME[DIRT] = 'Dirt';         BLOCK_NAME[STONE] = 'Stone';
+BLOCK_NAME[SAND] = 'Sand';          BLOCK_NAME[WOOD] = 'Wood';         BLOCK_NAME[LEAVES] = 'Leaves';
+BLOCK_NAME[GLASS] = 'Glass';         BLOCK_NAME[WATER] = 'Water';       BLOCK_NAME[TNT] = 'TNT';
+BLOCK_NAME[REDSTONE_ORE] = 'Redstone Ore';
+BLOCK_NAME[REDSTONE_WIRE] = 'Redstone Wire'; BLOCK_NAME[REDSTONE_TORCH] = 'Redstone Torch';
+BLOCK_NAME[REDSTONE_BLOCK] = 'Redstone Block'; BLOCK_NAME[LEVER] = 'Lever';
+BLOCK_NAME[REPEATER] = 'Repeater';    BLOCK_NAME[LAMP] = 'Redstone Lamp';  BLOCK_NAME[PISTON] = 'Piston';
+BLOCK_NAME[FIRE] = 'Fire';           BLOCK_NAME[FLINT_STEEL] = 'Flint & Steel';
+
+var PAGES = [
+  [GRASS, DIRT, STONE, SAND, WOOD, LEAVES, GLASS, WATER, TNT, REDSTONE_ORE],
+  [FLINT_STEEL, REDSTONE_WIRE, REDSTONE_TORCH, REDSTONE_BLOCK, LEVER, REPEATER, LAMP, PISTON]
+];
+var PAGE_NAME = ['Building Blocks', 'Redstone & Tools'];
+
+var WORLD_W = 320, WORLD_H = 96, WORLD_D = 320, CHUNK = 16;
+var CHUNKS_X = WORLD_W / CHUNK, CHUNKS_Z = WORLD_D / CHUNK;   // 20 × 20 = 400 chunks
+var FOG_NEAR = 46, FOG_FAR = 92;
+var REACH = 6;
+var LOAD_R = 6;      // Mesh load radius (chunks) → a radius of 96 blocks
+var UNLOAD_R = 9;    // Past this radius the GPU memory is released
+var BASE_H = 22;     // Base terrain height
+
+/* ======================= 2. World Data ======================= */
+
+var world = new Uint8Array(WORLD_W * WORLD_H * WORLD_D);
+var meta = new Uint8Array(WORLD_W * WORLD_H * WORLD_D);
+
+// meta bit layout: bit0-2 facing / bit3 on-off state / bit4 TNT flashing; water: bit0-3 level + bit4 is-source
+
+var YSTRIDE = WORLD_W * WORLD_D;          // Stride between vertically adjacent cells in the array
+function idx(x, y, z) { return (y * WORLD_D + z) * WORLD_W + x; }
+function decode(i) {
+  var x = i % WORLD_W;
+  var t = (i / WORLD_W) | 0;
+  return [x, (t / WORLD_D) | 0, t % WORLD_D];
+}
+function inWorld(x, y, z) {
+  return x >= 0 && x < WORLD_W && y >= 0 && y < WORLD_H && z >= 0 && z < WORLD_D;
+}
+function getBlock(x, y, z) {
+  if (x < 0 || x >= WORLD_W || z < 0 || z >= WORLD_D) return STONE;
+  if (y < 0) return STONE;
+  if (y >= WORLD_H) return AIR;
+  return world[idx(x, y, z)];
+}
+function isSolid(x, y, z) { return isCollide(getBlock(x, y, z)); }
+
+var waterSet = new Map();     // Set of water block indices
+var rsSet = new Map();        // Set of redstone component indices
+var tntFuse = new Map();      // TNT index -> seconds remaining
+var fireSet = new Map();      // Fire index -> seconds remaining
+
+function setBlock(x, y, z, v, m) {
+  if (!inWorld(x, y, z)) return;
+  var i = idx(x, y, z), old = world[i];
+  if (old === WATER) waterSet['delete'](i);
+  if (isRsDevice(old)) rsSet['delete'](i);
+  if (old === TNT) tntFuse['delete'](i);
+  if (old === FIRE) fireSet['delete'](i);
+  world[i] = v; meta[i] = m || 0;
+  if (v === WATER) { waterSet.set(i, i); fireSet['delete'](i); }
+  if (isRsDevice(v)) rsSet.set(i, i);
+}
+
+/* ======================= 3. Noise & Terrain ======================= */
+
+function hash2(x, z, seed) {
+  var n = Math.imul(x | 0, 374761393) + Math.imul(z | 0, 668265263) + Math.imul(seed | 0, 1274126177);
+  n = Math.imul(n ^ (n >>> 13), 1274126177);
+  return ((n ^ (n >>> 16)) >>> 0) / 4294967295;
+}
+function smooth(t) { return t * t * (3 - 2 * t); }
+function valueNoise(x, z, seed) {
+  var xi = Math.floor(x), zi = Math.floor(z);
+  var tx = smooth(x - xi), tz = smooth(z - zi);
+  var a = hash2(xi, zi, seed), b = hash2(xi + 1, zi, seed);
+  var c = hash2(xi, zi + 1, seed), d = hash2(xi + 1, zi + 1, seed);
+  return (a * (1 - tx) + b * tx) * (1 - tz) + (c * (1 - tx) + d * tx) * tz;
+}
+function fbm(x, z, seed) {
+  var sum = 0, amp = 1, freq = 1, norm = 0;
+  for (var i = 0; i < 4; i++) {
+    sum += valueNoise(x * freq, z * freq, seed + i * 17) * amp;
+    norm += amp; amp *= 0.5; freq *= 2;
+  }
+  return sum / norm;
+}
+
+var SEED = 20261021;
+
+/* ---- Column info: depends only on (x,z) so it stays consistent across chunks ----
+   Performance note: the fbm octave count is trimmed where possible, and a single cheap hash
+   filters out 98.8% of columns before the tree test, so the expensive height field is never
+   evaluated for every column in the padded range. ---- */
+function fbm3(x, z, seed) {              // 3 octaves, for the main terrain
+  var sum = 0, amp = 1, freq = 1, norm = 0;
+  for (var i = 0; i < 3; i++) {
+    sum += valueNoise(x * freq, z * freq, seed + i * 17) * amp;
+    norm += amp; amp *= 0.5; freq *= 2;
+  }
+  return sum / norm;
+}
+function fbm2(x, z, seed) {              // 2 octaves, for detail / sand
+  return (valueNoise(x, z, seed) * 1 + valueNoise(x * 2, z * 2, seed + 17) * 0.5) / 1.5;
+}
+function colHeight(x, z) {
+  var base = fbm3(x / 30, z / 30, SEED);
+  var hill = fbm2(x / 12, z / 12, SEED + 99);
+  var ridge = fbm2(x / 62, z / 62, SEED + 177);      // Large-scale relief, so mountains show up in the distance
+  var h = Math.floor(BASE_H + base * 15 + hill * 5 + ridge * 17);
+  if (h > WORLD_H - 14) h = WORLD_H - 14;
+  if (h < 3) h = 3;
+  return h;
+}
+function colSandy(x, z) { return fbm2(x / 22, z / 22, SEED + 321) > 0.585; }
+function colRocky(h) { return h >= BASE_H + 20; }
+
+// Lakes: a globally scattered set of bowl-shaped basins, each with its own flat surface
+var LAKES = [];
+(function () {
+  var n = 14;
+  for (var i = 0; i < n; i++) {
+    var a = hash2(i, 7, SEED + 4001), b = hash2(i, 13, SEED + 4002), c = hash2(i, 29, SEED + 4003);
+    var lx = 24 + a * (WORLD_W - 48), lz = 24 + b * (WORLD_D - 48);
+    var r = 7 + c * 10;
+    var h = colHeight(Math.round(lx), Math.round(lz));
+    LAKES.push({ x: lx, z: lz, r: r, r2: (r + 7) * (r + 7), floor: h - 5, wl: h - 1 });
+  }
+})();
+var _lk = { surface: 0, bottom: 0 };
+function lakeAt(x, z) {                  // Reuse one object to avoid constant allocation
+  for (var i = 0; i < LAKES.length; i++) {
+    var L = LAKES[i];
+    var dx = x - L.x, dz = z - L.z;
+    var d2 = dx * dx + dz * dz;
+    if (d2 > L.r2) continue;
+    var d = Math.sqrt(d2);
+    _lk.surface = L.wl;
+    _lk.bottom = d <= L.r
+      ? L.floor + Math.round(d * 0.40)
+      : L.floor + Math.round(L.r * 0.40) + Math.round((d - L.r) * 1.5);
+    return _lk;
+  }
+  return null;
+}
+
+// Tree test: a cheap hash screens out most columns before we bother computing the height
+function treeAt(x, z) {
+  if (hash2(x, z, SEED + 555) <= 0.988) return 0;
+  var h = colHeight(x, z);
+  if (colRocky(h) || colSandy(x, z)) return 0;
+  var lk = lakeAt(x, z);
+  if (lk && lk.bottom < h) return 0;                    // No trees on submerged ground
+  return 4 + Math.floor(hash2(x, z, SEED + 777) * 3);   // Trunk height in blocks
+}
+
+// Generate one chunk of terrain: look 2 blocks outwards so trees / lake shores survive chunk borders
+function generateChunk(cx, cz) {
+  var x0 = cx * CHUNK, z0 = cz * CHUNK;
+  var x, y, z;
+  function put(px, py, pz, b) {
+    if (px < x0 || px >= x0 + CHUNK || pz < z0 || pz >= z0 + CHUNK) return;
+    if (py < 0 || py >= WORLD_H) return;
+    world[idx(px, py, pz)] = b;
+  }
+  for (x = x0 - 2; x < x0 + CHUNK + 2; x++) {
+    if (x < 0 || x >= WORLD_W) continue;
+    var inX = (x >= x0 && x < x0 + CHUNK);
+    for (z = z0 - 2; z < z0 + CHUNK + 2; z++) {
+      if (z < 0 || z >= WORLD_D) continue;
+      var inZ = (z >= z0 && z < z0 + CHUNK);
+      var here = inX && inZ;
+
+      // Trees: the cheap test goes first; the full height field is only needed for columns inside this chunk or ones that really hold a tree
+      var th = 0, h = 0, sandy = false, rocky = false, lk = null;
+      var wantTree = hash2(x, z, SEED + 555) > 0.988;
+      if (here || wantTree) {
+        h = colHeight(x, z);
+        sandy = colSandy(x, z);
+        rocky = colRocky(h);
+        lk = lakeAt(x, z);
+        if (wantTree && !rocky && !sandy && !(lk && lk.bottom < h)) {
+          th = 4 + Math.floor(hash2(x, z, SEED + 777) * 3);
+        }
+      }
+
+      if (!here) {
+        if (th) plantTree(x, z, h, th, put);
+        continue;
+      }
+
+      var bottom = lk ? Math.min(lk.bottom, h) : h;
+      // Surface and everything below it
+      for (y = 0; y <= bottom; y++) {
+        var b;
+        if (y === 0) b = STONE;
+        else if (y === bottom) b = lk ? SAND : (rocky ? STONE : (sandy ? SAND : GRASS));
+        else if (y >= bottom - 3) b = lk ? SAND : (rocky ? STONE : (sandy ? SAND : DIRT));
+        else b = STONE;
+        put(x, y, z, b);
+      }
+      // Underground redstone veins: at most one per column, avoids a per-block loop
+      var oreTop = Math.min(bottom - 4, 18);
+      if (oreTop > 2 && hash2(x, z, SEED + 900) > 0.90) {
+        var oy = 3 + Math.floor(hash2(x, z, SEED + 901) * (oreTop - 3));
+        for (var k2 = 0; k2 < 3 && oy + k2 < oreTop; k2++) put(x, oy + k2, z, REDSTONE_ORE);
+      }
+      // Lake water
+      if (lk) {
+        for (y = bottom + 1; y <= lk.surface; y++) {
+          if (y < 0 || y >= WORLD_H) continue;
+          var wi = idx(x, y, z);
+          world[wi] = WATER; meta[wi] = WATER_MAX | 16; waterSet.set(wi, wi);
+        }
+      }
+      if (th) plantTree(x, z, h, th, put);
+    }
+  }
+}
+
+// Plant a tree: trunk + canopy (only writes inside the range put() allows, i.e. this chunk)
+function plantTree(x, z, h, th, put) {
+  var top = h + th, k, ly, lx, lz;
+  for (k = 1; k <= th; k++) put(x, h + k, z, WOOD);
+  for (ly = -2; ly <= 1; ly++) {
+    var r = (ly >= 0) ? 1 : 2;
+    for (lx = -r; lx <= r; lx++) {
+      for (lz = -r; lz <= r; lz++) {
+        if (Math.abs(lx) === r && Math.abs(lz) === r && ly < 0) continue;
+        if (lx === 0 && lz === 0 && ly <= 0) continue;
+        var tx = x + lx, ty = top + ly, tz = z + lz;
+        if (tx < 0 || tx >= WORLD_W || tz < 0 || tz >= WORLD_D || ty < 0 || ty >= WORLD_H) continue;
+        var li = idx(tx, ty, tz);
+        if (world[li] === AIR) world[li] = LEAVES;
+      }
+    }
+  }
+}
+
+/* ======================= 4. Procedural Texture Atlas (4×6) ======================= */
+
+function makeAtlas() {
+  var TS = 16, COLS = 4, ROWS = 8;
+  var cv = document.createElement('canvas');
+  cv.width = TS * COLS; cv.height = TS * ROWS;
+  var g = cv.getContext('2d');
+  g.fillStyle = '#000'; g.fillRect(0, 0, cv.width, cv.height);
+
+  // ox/oy is the pixel origin of the tile's top-left corner (from pos()); x/y are pixel coords in 0..15 inside the tile
+  function px(ox, oy, x, y, r, gg, b) {
+    g.fillStyle = 'rgb(' + Math.max(0, Math.min(255, r | 0)) + ',' +
+      Math.max(0, Math.min(255, gg | 0)) + ',' + Math.max(0, Math.min(255, b | 0)) + ')';
+    g.fillRect(ox + x, oy + y, 1, 1);
+  }
+  function pos(t) { return [(t % COLS) * TS, Math.floor(t / COLS) * TS]; }
+  function noise(t, base, amp, seed) {
+    var p = pos(t);
+    for (var y = 0; y < TS; y++) for (var x = 0; x < TS; x++) {
+      var n = (hash2(x + p[0], y + p[1], seed) - 0.5) * amp;
+      px(p[0], p[1], x, y, base[0] + n, base[1] + n, base[2] + n);
+    }
+  }
+  function rect(t, x0, y0, w, h, r, gg, b) {
+    var p = pos(t);
+    g.fillStyle = 'rgb(' + r + ',' + gg + ',' + b + ')';
+    g.fillRect(p[0] + x0, p[1] + y0, w, h);
+  }
+
+  noise(T_GRASS_TOP, [104, 160, 62], 46, 1);
+  for (var y1 = 0; y1 < TS; y1++) for (var x1 = 0; x1 < TS; x1++) {
+    var edge = 3 + Math.floor(hash2(x1, 0, 41) * 2.4);
+    var col = y1 < edge ? [104, 160, 62] : [138, 93, 59];
+    var n1 = (hash2(x1 + 5, y1 + 9, 2) - 0.5) * 40;
+    var p1 = pos(T_GRASS_SIDE);
+    px(p1[0], p1[1], x1, y1, col[0] + n1, col[1] + n1, col[2] + n1);
+  }
+  noise(T_DIRT, [138, 93, 59], 52, 3);
+  noise(T_STONE, [142, 142, 146], 40, 4);
+  noise(T_SAND, [226, 214, 160], 30, 5);
+  for (var y2 = 0; y2 < TS; y2++) for (var x2 = 0; x2 < TS; x2++) {
+    var v = (hash2(x2, 0, 12) - 0.5) * 34 + (hash2(x2, y2, 13) - 0.5) * 12;
+    var p2 = pos(T_WOOD_SIDE);
+    px(p2[0], p2[1], x2, y2, 107 + v, 79 + v, 42 + v);
+  }
+  for (var y3 = 0; y3 < TS; y3++) for (var x3 = 0; x3 < TS; x3++) {
+    var dx = x3 - 7.5, dy = y3 - 7.5, rr = Math.sqrt(dx * dx + dy * dy);
+    var ring = Math.sin(rr * 1.9) * 22;
+    var p3 = pos(T_WOOD_TOP);
+    px(p3[0], p3[1], x3, y3, 150 + ring, 116 + ring, 68 + ring);
+  }
+  noise(T_LEAVES, [70, 130, 48], 70, 6);
+
+  // Glass: pale blue border + light inner haze
+  noise(T_GLASS, [205, 225, 235], 18, 21);
+  rect(T_GLASS, 0, 0, 16, 1, 240, 250, 255);
+  rect(T_GLASS, 0, 15, 16, 1, 190, 215, 230);
+  rect(T_GLASS, 0, 0, 1, 16, 220, 240, 250);
+  rect(T_GLASS, 15, 0, 1, 16, 190, 215, 230);
+  rect(T_GLASS, 3, 4, 4, 1, 255, 255, 255);
+  rect(T_GLASS, 9, 9, 3, 1, 255, 255, 255);
+  rect(T_GLASS, 4, 3, 1, 3, 255, 255, 255);
+
+  /* ---- Water: a separate texture for each of the three face types ----
+     The top face stacks sine waves on a 16-pixel period plus periodic noise so it tiles
+     seamlessly in every direction, which lets the shader scroll the UVs and make the
+     surface look like it is actually flowing. ---- */
+  var TAU = Math.PI * 2;
+  function wsin(px2, py2, ax, ay, ph) {
+    return Math.sin(TAU * (ax * px2 + ay * py2) / TS + (ph || 0));
+  }
+
+  // Top face: the surface seen from above. Bright cyan-blue, crossed ripples + crest highlights
+  for (var yA = 0; yA < TS; yA++) for (var xA = 0; xA < TS; xA++) {
+    var w1 = wsin(xA, yA, 2, 1, 0.0);                 // Diagonal ripples
+    var w2 = wsin(xA, yA, 1, -2, 1.7);                // Ripples running the other way
+    var wvA = (w1 * 0.6 + w2 * 0.4) * 30 + (hash2(xA & 15, yA & 15, 31) - 0.5) * 16;
+    var cre = (w1 * 0.5 + w2 * 0.5) * 0.5 + 0.5;      // 0..1 crest
+    // Leave headroom on the highlight so all three channels never clip to 255 at once (that would turn the water grey-green)
+    var spec = Math.max(0, cre - 0.58) * 150;
+    var pA = pos(T_WATER_TOP);
+    px(pA[0], pA[1], xA, yA,
+       56 + wvA + spec * 0.50, 110 + wvA + spec * 0.60, 168 + wvA + spec * 0.30);
+  }
+  // Side face: a falling column / pool wall. Deep blue, lighter at the top, with vertical streaks
+  for (var yB = 0; yB < TS; yB++) for (var xB = 0; xB < TS; xB++) {
+    var fy = yB / (TS - 1);                                       // 0 = top
+    var streak = wsin(xB, yB, 2, 3, 0.4) * 14 + (hash2(xB & 15, yB & 15, 47) - 0.5) * 10;
+    var grad = 22 - fy * 46;                                      // Deeper towards the bottom
+    var pB = pos(T_WATER_SIDE);
+    px(pB[0], pB[1], xB, yB,
+       38 + grad + streak, 92 + grad + streak, 170 + grad + streak * 0.6);
+  }
+  // Bottom face: seen from underneath, the deepest layer
+  for (var yC = 0; yC < TS; yC++) for (var xC = 0; xC < TS; xC++) {
+    var wvC = wsin(xC, yC, 1, -2, 0.9) * 13 + (hash2(xC & 15, yC & 15, 53) - 0.5) * 12;
+    var pC = pos(T_WATER_BOTTOM);
+    px(pC[0], pC[1], xC, yC, 20 + wvC, 56 + wvC, 118 + wvC);
+  }
+
+  // TNT side: red base + white band + fuse
+  noise(T_TNT_SIDE, [178, 52, 40], 22, 33);
+  rect(T_TNT_SIDE, 0, 6, 16, 5, 235, 235, 235);
+  rect(T_TNT_SIDE, 0, 8, 16, 1, 190, 190, 190);
+  rect(T_TNT_SIDE, 2, 6, 2, 5, 60, 60, 60);
+  rect(T_TNT_SIDE, 8, 6, 2, 5, 60, 60, 60);
+  rect(T_TNT_SIDE, 13, 6, 2, 5, 60, 60, 60);
+  rect(T_TNT_SIDE, 0, 0, 16, 3, 120, 60, 40);
+  rect(T_TNT_SIDE, 7, 1, 2, 2, 70, 60, 55);
+  // TNT top: red base + white square
+  noise(T_TNT_TOP, [186, 58, 44], 20, 34);
+  rect(T_TNT_TOP, 3, 3, 10, 10, 230, 230, 230);
+  rect(T_TNT_TOP, 6, 6, 4, 4, 186, 58, 44);
+  rect(T_TNT_TOP, 0, 0, 16, 1, 140, 44, 34);
+
+  // Redstone block
+  noise(T_RS_BLOCK, [186, 40, 38], 26, 42);
+  rect(T_RS_BLOCK, 0, 0, 16, 1, 220, 70, 60);
+  rect(T_RS_BLOCK, 0, 15, 16, 1, 130, 26, 26);
+  rect(T_RS_BLOCK, 4, 4, 2, 2, 255, 120, 110);
+  rect(T_RS_BLOCK, 10, 9, 2, 2, 255, 120, 110);
+
+  // Redstone wire: dark base + red cross
+  noise(T_RS_WIRE, [70, 62, 62], 16, 51);
+  rect(T_RS_WIRE, 7, 2, 2, 12, 255, 90, 80);
+  rect(T_RS_WIRE, 2, 7, 12, 2, 255, 90, 80);
+
+  // Redstone lamp: grid (the colour comes from the tint)
+  noise(T_LAMP, [180, 165, 140], 14, 61);
+  rect(T_LAMP, 0, 0, 16, 1, 150, 138, 118);
+  rect(T_LAMP, 0, 15, 16, 1, 150, 138, 118);
+  rect(T_LAMP, 0, 0, 1, 16, 150, 138, 118);
+  rect(T_LAMP, 15, 0, 1, 16, 150, 138, 118);
+  rect(T_LAMP, 5, 5, 6, 6, 205, 190, 165);
+  rect(T_LAMP, 7, 7, 2, 2, 235, 220, 195);
+
+  // Redstone torch: wooden stick + red head
+  noise(T_RS_TORCH, [120, 92, 52], 20, 71);
+  rect(T_RS_TORCH, 0, 0, 16, 5, 255, 120, 90);
+  rect(T_RS_TORCH, 0, 0, 16, 2, 255, 200, 150);
+
+  // Repeater: stone slab + two arrows
+  noise(T_REPEATER, [168, 168, 172], 16, 81);
+  rect(T_REPEATER, 0, 0, 16, 1, 200, 200, 205);
+  rect(T_REPEATER, 0, 15, 16, 1, 130, 130, 135);
+  for (var a = 0; a < 2; a++) {
+    var ox = a ? 9 : 2;
+    rect(T_REPEATER, ox + 2, 5, 2, 6, 255, 120, 100);
+    rect(T_REPEATER, ox + 1, 10, 4, 1, 255, 120, 100);
+    rect(T_REPEATER, ox, 9, 1, 2, 255, 120, 100);
+    rect(T_REPEATER, ox + 5, 9, 1, 2, 255, 120, 100);
+  }
+
+  // Piston side (stone), piston face (wood in a stone frame), piston arm (wood grain)
+  noise(T_PISTON_SIDE, [150, 150, 154], 26, 91);
+  rect(T_PISTON_SIDE, 0, 0, 16, 1, 175, 175, 180);
+  noise(T_PISTON_FACE, [124, 92, 56], 24, 92);
+  rect(T_PISTON_FACE, 0, 0, 16, 2, 160, 160, 164);
+  rect(T_PISTON_FACE, 0, 14, 16, 2, 160, 160, 164);
+  rect(T_PISTON_FACE, 0, 0, 2, 16, 160, 160, 164);
+  rect(T_PISTON_FACE, 14, 0, 2, 16, 160, 160, 164);
+  noise(T_PISTON_ARM, [138, 108, 66], 22, 93);
+
+  // Lever (off / on)
+  function lever(t, on) {
+    noise(t, [130, 130, 134], 18, 101);
+    rect(t, 0, 0, 16, 2, 100, 100, 104);
+    rect(t, 5, 3, 6, 8, 118, 92, 58);      // Wooden handle
+    rect(t, 5, 3, 2, 8, 96, 74, 46);
+    if (on) { rect(t, 7, 5, 3, 3, 255, 90, 80); rect(t, 8, 6, 1, 1, 255, 200, 180); }
+    else { rect(t, 7, 5, 3, 3, 120, 40, 36); }
+  }
+  lever(T_LEVER_OFF, false);
+  lever(T_LEVER_ON, true);
+
+  // Redstone ore
+  noise(T_RS_ORE, [138, 138, 142], 30, 111);
+  rect(T_RS_ORE, 3, 3, 3, 3, 226, 60, 52);
+  rect(T_RS_ORE, 9, 4, 3, 2, 226, 60, 52);
+  rect(T_RS_ORE, 5, 9, 2, 3, 226, 60, 52);
+  rect(T_RS_ORE, 10, 10, 3, 3, 226, 60, 52);
+
+  noise(T_SPARE, [128, 128, 128], 30, 121);
+
+  // Fire: a flame gradient from bright yellow at the bottom to dark red at the top (canvas y=0 is the top)
+  for (var y5 = 0; y5 < TS; y5++) {
+    for (var x5 = 0; x5 < TS; x5++) {
+      var fy = y5 / (TS - 1);                     // 0 = top, 1 = bottom
+      var flick = (hash2(x5, y5, 131) - 0.5) * 30;
+      var edge = Math.min(Math.abs(x5 - 7.5) / 7.5, 1);
+      var core = 1 - edge * 0.5;                  // Slightly darker at the edges, brightest at the core
+      var r5 = (238 + 20 * fy) * core + flick;
+      var g5 = (72 + 168 * fy) * core + flick * 0.8;
+      var b5 = (30 + 90 * fy) * core + flick * 0.5;
+      var p5 = pos(T_FIRE);
+      px(p5[0], p5[1], x5, y5, r5, g5, b5);
+    }
+  }
+
+  // Flint and steel: dark grip + steel striker + flint
+  noise(T_FLINT, [96, 86, 78], 26, 141);
+  rect(T_FLINT, 2, 10, 5, 5, 118, 96, 62);        // Wooden handle
+  rect(T_FLINT, 2, 10, 1, 5, 92, 74, 48);
+  rect(T_FLINT, 7, 2, 6, 8, 160, 164, 172);       // Steel striker
+  rect(T_FLINT, 7, 2, 6, 1, 200, 204, 210);
+  rect(T_FLINT, 8, 4, 2, 2, 226, 230, 236);       // Highlight
+  rect(T_FLINT, 10, 9, 4, 3, 232, 214, 120);      // Flint (glows when struck)
+  rect(T_FLINT, 11, 10, 2, 1, 255, 244, 180);
+
+  return { canvas: cv, cols: COLS, rows: ROWS, ts: TS };
+}
+
+/* ======================= 5. Mesh Building ======================= */
+// FACES order matches DIRS: 0:+X 1:-X 2:+Z 3:-Z 4:+Y 5:-Y
+var DIRS = [[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0], [0, -1, 0]];
+var FACES = [
+  { d: [1, 0, 0],  u: [0, 1, 0], v: [0, 0, 1], light: 0.86 },  // +X
+  { d: [-1, 0, 0], u: [0, 0, 1], v: [0, 1, 0], light: 0.86 },  // -X
+  { d: [0, 0, 1],  u: [1, 0, 0], v: [0, 1, 0], light: 0.74 },  // +Z
+  { d: [0, 0, -1], u: [0, 1, 0], v: [1, 0, 0], light: 0.74 },  // -Z
+  { d: [0, 1, 0],  u: [0, 0, 1], v: [1, 0, 0], light: 1.00 },  // +Y
+  { d: [0, -1, 0], u: [1, 0, 0], v: [0, 0, 1], light: 0.62 }   // -Y
+];
+var TRI = [0, 1, 2, 0, 2, 3];
+var CORNERS = [[0, 0], [1, 0], [1, 1], [0, 1]];
+var UVS = [[0, 1], [1, 1], [1, 0], [0, 0]];
+var GRID = new Int8Array(9);   // Scratch buffer for AO sampling
+
+function Builder() {
+  this.cap = 6 * 10 * 512;
+  this.data = new Float32Array(this.cap);
+  this.n = 0;
+}
+Builder.prototype.ensure = function (need) {
+  if (this.n + need <= this.cap) return;
+  while (this.cap < this.n + need) this.cap *= 2;
+  var nd = new Float32Array(this.cap);
+  nd.set(this.data.subarray(0, this.n));
+  this.data = nd;
+};
+Builder.prototype.vert = function (x, y, z, u, v, l, r, g, b, a) {
+  this.ensure(10);
+  var d = this.data, n = this.n;
+  d[n] = x; d[n + 1] = y; d[n + 2] = z; d[n + 3] = u; d[n + 4] = v; d[n + 5] = l;
+  d[n + 6] = r; d[n + 7] = g; d[n + 8] = b; d[n + 9] = a;
+  this.n = n + 10;
+};
+
+var ATLAS = null;
+var UV_INSET = 0.5 / 256;
+function uvOf(tile) {
+  var col = tile % ATLAS.cols, row = Math.floor(tile / ATLAS.cols);
+  var tw = 1 / ATLAS.cols, th = 1 / ATLAS.rows;
+  return [col * tw + UV_INSET, row * th + UV_INSET, (col + 1) * tw - UV_INSET, (row + 1) * th - UV_INSET];
+}
+
+function isFull(id) { return SHAPE[id] === S_FULL; }
+function waterLevel(m) { return m & 15; }
+function isSource(m) { return (m >> 4) & 1; }
+
+// Water surface height (0..1): a falling column (water still above) renders full height, everything else follows its level
+// li is a local index into locBuf / locMeta
+function waterTop(li) {
+  if (locBuf[li] !== WATER) return 1;
+  if (locBuf[li + F_DOFF[4]] === WATER) return 1;      // Water above → a falling column
+  var m = locMeta[li];
+  var wl = m & 15;
+  return wl ? wl / WATER_MAX : 0.125;
+}
+
+function faceTile(id, f, m) {
+  if (id === LEVER) return ((m >> 3) & 1) ? T_LEVER_ON : T_LEVER_OFF;
+  if (id === PISTON) return (f === (m & 7)) ? T_PISTON_FACE : T_PISTON_SIDE;
+  if (id === PISTON_ARM) return (f === (m & 7)) ? T_PISTON_FACE : T_PISTON_ARM;
+  var F = BLOCK_FACE[id];
+  return f === 4 ? F[0] : (f === 5 ? F[1] : F[2]);
+}
+
+function tintOf(id, m, power) {
+  if (id === WATER) {
+    // The lower the level, the shallower and more transparent, giving layers that fade outwards from the source.
+    // Green is pushed lower than blue so the grass showing through never turns the whole pool green.
+    var wl = waterLevel(m) / WATER_MAX;
+    if (wl > 1) wl = 1;
+    var k = 0.80 + 0.20 * wl;
+    return [0.52 * k, 0.70 * k, 1.18 * k, 0.46 + 0.22 * wl];
+  }
+  if (id === GLASS) return [0.88, 0.95, 1.0, 0.34];
+  if (id === REDSTONE_WIRE) {
+    // Unpowered it must still read as dark red (not a black line); powered it fades up to bright red
+    var t = (power || 0) / 15;
+    return [0.78 + 0.38 * t, 0.19 + 0.22 * t, 0.17 + 0.20 * t, 1];
+  }
+  if (id === LAMP) return ((m >> 3) & 1) ? [1.15, 1.0, 0.62, 1] : [0.44, 0.38, 0.32, 1];
+  if (id === REPEATER) return ((m >> 3) & 1) ? [1.1, 0.45, 0.32, 1] : [0.58, 0.30, 0.24, 1];
+  if (id === REDSTONE_TORCH) return [1.1, 0.52, 0.34, 1];
+  if (id === TNT) return ((m >> 4) & 1) ? [1.5, 0.55, 0.45, 1] : [1, 1, 1, 1];
+  if (id === FIRE) return (m & 1) ? [1.55, 1.05, 0.42, 0.86] : [1.40, 0.88, 0.30, 0.88];
+  return [1, 1, 1, 1];
+}
+
+// Per-chunk local cache (with a 1-block border) so face culling and AO lookups become local array reads
+var LX = CHUNK + 2, LZ = CHUNK + 2, LY = WORLD_H + 2;
+var locBuf = new Uint8Array(LX * LZ * LY);
+var locMeta = new Uint8Array(LX * LZ * LY);   // Same layout as locBuf, used for water-level queries
+var OPAQ = new Uint8Array(32);
+(function () { for (var b = 0; b < 32; b++) OPAQ[b] = isOpaque(b) ? 1 : 0; })();
+// Index offset of each face inside the local cache
+var F_DOFF = [], F_UOFF = [], F_VOFF = [];
+(function () {
+  for (var f = 0; f < 6; f++) {
+    var F = FACES[f];
+    F_DOFF.push((F.d[1] * LZ + F.d[2]) * LX + F.d[0]);
+    F_UOFF.push((F.u[1] * LZ + F.u[2]) * LX + F.u[0]);
+    F_VOFF.push((F.v[1] * LZ + F.v[2]) * LX + F.v[0]);
+  }
+})();
+
+// Reuse the buffers so a rebuild never allocates hundreds of thousands of floats
+var gOpaque = new Builder(), gTrans = new Builder();
+
+function buildChunk(cx, cz) {
+  var opaque = gOpaque, trans = gTrans;
+  opaque.n = 0; trans.n = 0;
+  var x0 = cx * CHUNK, z0 = cz * CHUNK;
+  var x, y, z, f, i, c, lx, ly, lz;
+
+  // Fill the local cache
+  for (ly = 0; ly < LY; ly++) {
+    var wy = ly - 1;
+    for (lz = 0; lz < LZ; lz++) {
+      var wz = z0 + lz - 1;
+      var dst = (ly * LZ + lz) * LX;
+      if (wy < 0 || wy >= WORLD_H || wz < 0 || wz >= WORLD_D) {
+        locBuf.fill(wy >= WORLD_H ? AIR : STONE, dst, dst + LX);
+        locMeta.fill(0, dst, dst + LX);
+        continue;
+      }
+      var src = (wy * WORLD_D + wz) * WORLD_W;
+      if (x0 - 1 >= 0 && x0 + CHUNK < WORLD_W) {
+        locBuf.set(world.subarray(src + x0 - 1, src + x0 + CHUNK + 1), dst);
+        locMeta.set(meta.subarray(src + x0 - 1, src + x0 + CHUNK + 1), dst);
+      } else {
+        for (lx = 0; lx < LX; lx++) {
+          var wx = x0 + lx - 1;
+          if (wx < 0 || wx >= WORLD_W) { locBuf[dst + lx] = STONE; locMeta[dst + lx] = 0; }
+          else { locBuf[dst + lx] = world[src + wx]; locMeta[dst + lx] = meta[src + wx]; }
+        }
+      }
+    }
+  }
+
+  for (x = 0; x < CHUNK; x++) {
+    for (z = 0; z < CHUNK; z++) {
+      var ii = idx(x0 + x, 0, z0 + z) - 0;   // Column base (y=0)
+      for (y = 0; y < WORLD_H; y++) {
+        var li0 = ((y + 1) * LZ + (z + 1)) * LX + (x + 1);
+        var id = locBuf[li0];
+        if (id === AIR) continue;
+        var m = meta[ii + y * WORLD_D * WORLD_W];
+        var shape = SHAPE[id];
+        if (!shape) continue;
+        var full = (shape === S_FULL) && id !== WATER;
+        var box = shape;
+        var myH = 1, isW = (id === WATER);
+        if (isW) {
+          myH = waterTop(li0);
+          box = [0, 0, 0, 1, myH, 1];
+        }
+        var pw = (id === REDSTONE_WIRE) ? (rsPower.get(ii + y * WORLD_D * WORLD_W) || 0) : 0;
+        var tint = tintOf(id, m, pw);
+        var tgt = isTranslucent(id) ? trans : opaque;
+
+        for (f = 0; f < 6; f++) {
+          var F = FACES[f];
+          var nb = locBuf[li0 + F_DOFF[f]];
+          if (OPAQ[nb]) continue;
+          if (id === GLASS && nb === GLASS) continue;
+          if (id !== WATER && y === 0 && f === 5) continue;   // Bottom of the world
+
+          var bx = box;
+          if (isW && nb === WATER) {
+            // The neighbour's surface is at or above ours → the face is invisible, cull it;
+            // the neighbour is lower → keep the side wall and clip away the lower part it hides,
+            // so the step between the two water levels stays visible
+            var nh = waterTop(li0 + F_DOFF[f]);
+            if (nh >= myH - 0.001) continue;
+            bx = [box[0], nh, box[2], box[3], box[4], box[5]];
+          }
+
+          var tile = faceTile(id, f, m);
+          var uv = uvOf(tile);
+          var needAO = full && !OPAQ[nb];
+          if (needAO) {
+            var nbi = li0 + F_DOFF[f], uo = F_UOFF[f], vo = F_VOFF[f];
+            for (var ga = -1; ga <= 1; ga++) {
+              for (var gb = -1; gb <= 1; gb++) {
+                GRID[(ga + 1) * 3 + (gb + 1)] = (!ga && !gb) ? 0 : OPAQ[locBuf[nbi + uo * ga + vo * gb]];
+              }
+            }
+          }
+          var lBase = F.light;
+          if (id === WATER) lBase *= 0.95;
+          if (id === REDSTONE_WIRE || id === REPEATER || id === REDSTONE_TORCH || id === LEVER || id === FIRE) lBase = 1.0;
+
+          var uLo = (F.u[0] ? bx[0] : 0) + (F.u[1] ? bx[1] : 0) + (F.u[2] ? bx[2] : 0);
+          var uHi = (F.u[0] ? bx[3] : 0) + (F.u[1] ? bx[4] : 0) + (F.u[2] ? bx[5] : 0);
+          var vLo = (F.v[0] ? bx[0] : 0) + (F.v[1] ? bx[1] : 0) + (F.v[2] ? bx[2] : 0);
+          var vHi = (F.v[0] ? bx[3] : 0) + (F.v[1] ? bx[4] : 0) + (F.v[2] ? bx[5] : 0);
+          var fixedVal = F.d[0] ? (F.d[0] > 0 ? bx[3] : bx[0])
+                       : (F.d[1] ? (F.d[1] > 0 ? bx[4] : bx[1])
+                                : (F.d[2] > 0 ? bx[5] : bx[2]));
+
+          for (i = 0; i < 6; i++) {
+            c = CORNERS[TRI[i]];
+            var su = uLo + (uHi - uLo) * c[0];
+            var sv = vLo + (vHi - vLo) * c[1];
+            var px = x0 + x + F.u[0] * su + F.v[0] * sv;
+            var py = y + F.u[1] * su + F.v[1] * sv;
+            var pz = z0 + z + F.u[2] * su + F.v[2] * sv;
+            if (F.d[0]) px += fixedVal;
+            else if (F.d[1]) py += fixedVal;
+            else pz += fixedVal;
+
+            var ao = 3;
+            if (needAO) {
+              var da = c[0] ? 1 : -1, db = c[1] ? 1 : -1;
+              var s1 = GRID[(da + 1) * 3 + 1];
+              var s2 = GRID[3 + (db + 1)];
+              var cc = GRID[(da + 1) * 3 + (db + 1)];
+              ao = (s1 && s2) ? 0 : 3 - (s1 + s2 + cc);
+            }
+            var light = lBase * (full ? (0.68 + 0.32 * (ao / 3)) : 0.94);
+            var uu = (UVS[TRI[i]][0] ? uv[2] : uv[0]);
+            var vv = (UVS[TRI[i]][1] ? uv[3] : uv[1]);
+            tgt.vert(px, py, pz, uu, vv, light, tint[0], tint[1], tint[2], tint[3]);
+          }
+        }
+      }
+    }
+  }
+  return { opaque: opaque, trans: trans };
+}
+
+/* ======================= 6. WebGL ======================= */
+
+var canvas = document.getElementById('gl');
+var gl = canvas.getContext('webgl', { antialias: true, alpha: false });
+if (!gl) { alert('Your browser does not support WebGL'); return; }
+
+function compile(type, src) {
+  var s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+function program(vs, fs) {
+  var p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, vs));
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  return p;
+}
+
+var blockProg = program(
+  'attribute vec3 aPos; attribute vec2 aUV; attribute float aLight; attribute vec4 aColor;' +
+  'uniform mat4 uVP; uniform vec3 uCam; uniform float uTime;' +
+  'varying vec2 vUV; varying float vL; varying float vD; varying vec4 vC;' +
+  'void main(){' +
+  ' vL=aLight; vC=aColor;' +
+  ' vec3 p=aPos;' +
+  ' float isWater=step(0.5,aColor.a)*(1.0-step(0.8,aColor.a));' +
+  ' p.y+=isWater*0.035*sin(uTime*1.6+aPos.x*0.9+aPos.z*0.7);' +
+  // The water texture scrolls inside its tile (the texture itself tiles seamlessly), so it looks like it is really flowing
+  ' vec2 ts=vec2(0.25,0.125);' +
+  ' vec2 base=floor(aUV/ts)*ts;' +
+  ' vec2 loc=fract((aUV-base)/ts+vec2(uTime*0.09,uTime*0.06));' +
+  ' vUV=mix(aUV,base+loc*ts,isWater);' +
+  ' vD=length(p-uCam);' +
+  ' gl_Position=uVP*vec4(p,1.0); }',
+  'precision mediump float;' +
+  'uniform sampler2D uTex; uniform vec3 uFog; uniform float uNear; uniform float uFar;' +
+  'varying vec2 vUV; varying float vL; varying float vD; varying vec4 vC;' +
+  'void main(){ vec4 c=texture2D(uTex,vUV);' +
+  ' c.rgb*=vC.rgb*vL; c.a*=vC.a;' +
+  ' float f=clamp((vD-uNear)/(uFar-uNear),0.0,1.0);' +
+  ' gl_FragColor=vec4(mix(c.rgb,uFog,f*f),c.a); }'
+);
+var A_POS = gl.getAttribLocation(blockProg, 'aPos');
+var A_UV = gl.getAttribLocation(blockProg, 'aUV');
+var A_LIGHT = gl.getAttribLocation(blockProg, 'aLight');
+var A_COLOR = gl.getAttribLocation(blockProg, 'aColor');
+var U_VP = gl.getUniformLocation(blockProg, 'uVP');
+var U_CAM = gl.getUniformLocation(blockProg, 'uCam');
+var U_TIME = gl.getUniformLocation(blockProg, 'uTime');
+var U_TEX = gl.getUniformLocation(blockProg, 'uTex');
+var U_FOG = gl.getUniformLocation(blockProg, 'uFog');
+var U_NEAR = gl.getUniformLocation(blockProg, 'uNear');
+var U_FAR = gl.getUniformLocation(blockProg, 'uFar');
+
+var lineProg = program(
+  'attribute vec3 aPos; uniform mat4 uVP; void main(){ gl_Position=uVP*vec4(aPos,1.0); }',
+  'precision mediump float; void main(){ gl_FragColor=vec4(0.0,0.0,0.0,0.8); }'
+);
+var LA_POS = gl.getAttribLocation(lineProg, 'aPos');
+var LU_VP = gl.getUniformLocation(lineProg, 'uVP');
+var lineBuf = gl.createBuffer();
+
+ATLAS = makeAtlas();
+var tex = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, tex);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, ATLAS.canvas);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+/* ======================= 7. Matrices ======================= */
+
+function perspective(out, fovy, aspect, near, far) {
+  var f = 1 / Math.tan(fovy / 2), nf = 1 / (near - far);
+  out[0] = f / aspect; out[1] = 0; out[2] = 0; out[3] = 0;
+  out[4] = 0; out[5] = f; out[6] = 0; out[7] = 0;
+  out[8] = 0; out[9] = 0; out[10] = (far + near) * nf; out[11] = -1;
+  out[12] = 0; out[13] = 0; out[14] = 2 * far * near * nf; out[15] = 0;
+  return out;
+}
+function lookAt(out, eye, center, up) {
+  var zx = eye[0] - center[0], zy = eye[1] - center[1], zz = eye[2] - center[2];
+  var zl = Math.sqrt(zx * zx + zy * zy + zz * zz); zx /= zl; zy /= zl; zz /= zl;
+  var xx = up[1] * zz - up[2] * zy, xy = up[2] * zx - up[0] * zz, xz = up[0] * zy - up[1] * zx;
+  var xl = Math.sqrt(xx * xx + xy * xy + xz * xz); xx /= xl; xy /= xl; xz /= xl;
+  var yx = zy * xz - zz * xy, yy = zz * xx - zx * xz, yz = zx * xy - zy * xx;
+  out[0] = xx; out[1] = yx; out[2] = zx; out[3] = 0;
+  out[4] = xy; out[5] = yy; out[6] = zy; out[7] = 0;
+  out[8] = xz; out[9] = yz; out[10] = zz; out[11] = 0;
+  out[12] = -(xx * eye[0] + xy * eye[1] + xz * eye[2]);
+  out[13] = -(yx * eye[0] + yy * eye[1] + yz * eye[2]);
+  out[14] = -(zx * eye[0] + zy * eye[1] + zz * eye[2]);
+  out[15] = 1;
+  return out;
+}
+function mul(out, a, b) {
+  for (var c = 0; c < 4; c++) {
+    for (var r = 0; r < 4; r++) {
+      out[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] +
+                       a[8 + r] * b[c * 4 + 2] + a[12 + r] * b[c * 4 + 3];
+    }
+  }
+  return out;
+}
+
+/* ======================= 8. Chunks ======================= */
+
+var chunks = [];
+for (var ccx = 0; ccx < CHUNKS_X; ccx++) {
+  chunks[ccx] = [];
+  for (var ccz = 0; ccz < CHUNKS_Z; ccz++) {
+    chunks[ccx][ccz] = {
+      bo: gl.createBuffer(), bt: gl.createBuffer(),
+      co: 0, ct: 0, dirty: true, built: false, gen: false,
+      cx: ccx, cz: ccz
+    };
+  }
+}
+
+// Terrain is generated on demand (only computed the first time you get near a chunk)
+function ensureGen(cx, cz) {
+  if (cx < 0 || cx >= CHUNKS_X || cz < 0 || cz >= CHUNKS_Z) return;
+  var ch = chunks[cx][cz];
+  if (ch.gen) return;
+  generateChunk(cx, cz);
+  ch.gen = true;
+  ch.dirty = true;
+}
+
+function markDirty(x, z) {
+  var c = Math.floor(x / CHUNK), d = Math.floor(z / CHUNK);
+  if (c < 0 || c >= CHUNKS_X || d < 0 || d >= CHUNKS_Z) return;
+  chunks[c][d].dirty = true;
+  if (x % CHUNK === 0 && c > 0) chunks[c - 1][d].dirty = true;
+  if (x % CHUNK === CHUNK - 1 && c < CHUNKS_X - 1) chunks[c + 1][d].dirty = true;
+  if (z % CHUNK === 0 && d > 0) chunks[c][d - 1].dirty = true;
+  if (z % CHUNK === CHUNK - 1 && d < CHUNKS_Z - 1) chunks[c][d + 1].dirty = true;
+}
+
+function uploadChunk(ch) {
+  ensureGen(ch.cx, ch.cz);
+  var b = buildChunk(ch.cx, ch.cz);
+  gl.bindBuffer(gl.ARRAY_BUFFER, ch.bo);
+  gl.bufferData(gl.ARRAY_BUFFER, b.opaque.data.subarray(0, b.opaque.n), gl.STATIC_DRAW);
+  gl.bindBuffer(gl.ARRAY_BUFFER, ch.bt);
+  gl.bufferData(gl.ARRAY_BUFFER, b.trans.data.subarray(0, b.trans.n), gl.STATIC_DRAW);
+  ch.co = b.opaque.n / 10;
+  ch.ct = b.trans.n / 10;
+  ch.dirty = false;
+  ch.built = true;
+}
+
+// Release the GPU memory of distant chunks (memory stays flat however far you walk)
+function releaseChunk(ch) {
+  if (!ch.built) return;
+  gl.bindBuffer(gl.ARRAY_BUFFER, ch.bo);
+  gl.bufferData(gl.ARRAY_BUFFER, EMPTY, gl.STATIC_DRAW);
+  gl.bindBuffer(gl.ARRAY_BUFFER, ch.bt);
+  gl.bufferData(gl.ARRAY_BUFFER, EMPTY, gl.STATIC_DRAW);
+  ch.co = 0; ch.ct = 0; ch.built = false;
+}
+var EMPTY = new Float32Array(0);
+
+// Streaming: generate terrain, build meshes and free distant chunks as the player moves
+// Driven by a "per-frame time budget" rather than a fixed count: per-chunk cost varies wildly, so only timing keeps frames smooth
+var GEN_BUDGET = 5, BUILD_BUDGET = 6;    // ms per frame
+function nowMs() {
+  return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+}
+
+function updateChunks(eye, dir) {
+  var pcx = Math.floor(player.x / CHUNK), pcz = Math.floor(player.z / CHUNK);
+
+  // 1) Unload what is far away (past the radius its GPU memory is freed, so memory stays flat however far you go)
+  for (var i = 0; i < CHUNKS_X; i++) {
+    for (var c = 0; c < CHUNKS_Z; c++) {
+      var ch = chunks[i][c];
+      if (!ch.built) continue;
+      if (Math.abs(i - pcx) > UNLOAD_R || Math.abs(c - pcz) > UNLOAD_R) releaseChunk(ch);
+    }
+  }
+
+  // 2) Generate terrain: near to far, stop once the budget is gone (includes a one-chunk ring outside the border for face culling / AO sampling)
+  var gr = LOAD_R + 1, t0 = nowMs();
+  var needGen = [];
+  for (var a = pcx - gr; a <= pcx + gr; a++) {
+    if (a < 0 || a >= CHUNKS_X) continue;
+    for (var b = pcz - gr; b <= pcz + gr; b++) {
+      if (b < 0 || b >= CHUNKS_Z) continue;
+      if (chunks[a][b].gen) continue;
+      var dx = a - pcx, dz = b - pcz;
+      needGen.push([dx * dx + dz * dz, chunks[a][b]]);
+    }
+  }
+  if (needGen.length) {
+    needGen.sort(function (p, q) { return p[0] - q[0]; });
+    for (var g = 0; g < needGen.length; g++) {
+      var gc = needGen[g][1];
+      var cx2 = gc.cx, cz2 = gc.cz;
+      var mx2 = cx2 * CHUNK + CHUNK / 2, mz2 = cz2 * CHUNK + CHUNK / 2;
+      var gdx = mx2 - eye[0], gdz = mz2 - eye[2];
+      var gd = Math.sqrt(gdx * gdx + gdz * gdz);
+      // Skip chunks that are behind the player and beyond the fog distance
+      if (gd > FOG_FAR + CHUNK * 3) continue;
+      if (gd > CHUNK * 2 && (gdx * dir[0] + gdz * dir[2]) / (gd || 1) < -0.6) continue;
+      ensureGen(gc.cx, gc.cz);
+      if (nowMs() - t0 >= GEN_BUDGET) break;
+    }
+  }
+
+  // 3) Build meshes: again by distance + time budget
+  var pend = [];
+  for (var x2 = pcx - LOAD_R; x2 <= pcx + LOAD_R; x2++) {
+    if (x2 < 0 || x2 >= CHUNKS_X) continue;
+    for (var z2 = pcz - LOAD_R; z2 <= pcz + LOAD_R; z2++) {
+      if (z2 < 0 || z2 >= CHUNKS_Z) continue;
+      var ch2 = chunks[x2][z2];
+      if (!ch2.gen) continue;
+      if (ch2.built && !ch2.dirty) continue;
+      var mx = x2 * CHUNK + CHUNK / 2, mz = z2 * CHUNK + CHUNK / 2;
+      var ddx = mx - eye[0], ddz = mz - eye[2];
+      var dist = Math.sqrt(ddx * ddx + ddz * ddz);
+      if (dist > FOG_FAR + CHUNK * 3) continue;
+      if (dist > CHUNK * 2 && (ddx * dir[0] + ddz * dir[2]) / (dist || 1) < -0.6) continue;
+      pend.push([dist, ch2]);
+    }
+  }
+  var t1 = nowMs();
+  if (pend.length) {
+    pend.sort(function (p, q) { return p[0] - q[0]; });
+    for (var k = 0; k < pend.length; k++) {
+      uploadChunk(pend[k][1]);
+      if (nowMs() - t1 >= BUILD_BUDGET) break;
+    }
+  }
+  return pend.length;
+}
+
+/* ======================= 9. Redstone System ======================= */
+
+var rsPower = new Map();      // Redstone wire index -> power 0..15
+var rsTimer = 0;
+var repOn = new Map();        // Indices of repeaters that are currently conducting
+
+function neighborIdxs(i) {
+  var p = decode(i);
+  var out = [];
+  for (var d = 0; d < 6; d++) {
+    var nx = p[0] + DIRS[d][0], ny = p[1] + DIRS[d][1], nz = p[2] + DIRS[d][2];
+    if (nx < 0 || nx >= WORLD_W || ny < 0 || ny >= WORLD_H || nz < 0 || nz >= WORLD_D) continue;
+    out.push(idx(nx, ny, nz));
+  }
+  return out;
+}
+
+// The power a block itself can supply outwards (sources)
+function sourcePower(i) {
+  var id = world[i];
+  if (id === REDSTONE_BLOCK) return 15;
+  if (id === REDSTONE_TORCH) return 15;
+  if (id === LEVER) return ((meta[i] >> 3) & 1) ? 15 : 0;
+  if (id === REPEATER) return repOn.has(i) ? 15 : 0;
+  return 0;
+}
+
+function computeRedstone() {
+  var old = rsPower;
+  var np = new Map();          // Result of this pass; compared with the last one so only changed chunks are rebuilt
+  repOn.clear();
+  var queue = [];
+
+  function push(i, p) {
+    if (world[i] !== REDSTONE_WIRE) return;
+    if (p <= 0) return;
+    var cur = np.get(i) || 0;
+    if (cur >= p) return;
+    np.set(i, p);
+    queue.push(i, p);
+  }
+
+  // Strong sources feed adjacent wire directly at 14
+  var srcs = [];
+  rsSet.forEach(function (v, i) {
+    var id = world[i];
+    if (id === REDSTONE_BLOCK || id === REDSTONE_TORCH || id === LEVER) srcs.push(i);
+  });
+  for (var s = 0; s < srcs.length; s++) {
+    var si = srcs[s];
+    if (sourcePower(si) <= 0) continue;
+    var nb = neighborIdxs(si);
+    for (var k = 0; k < nb.length; k++) push(nb[k], 14);
+  }
+  // BFS decay along the wire
+  while (queue.length) {
+    var qi = queue.shift(), qp = queue.shift();
+    var nbs = neighborIdxs(qi);
+    for (var q = 0; q < nbs.length; q++) push(nbs[q], qp - 1);
+  }
+
+  // Repeaters (a few iterations so chains work)
+  for (var round = 0; round < 6; round++) {
+    var changed = false;
+    var reps = [];
+    rsSet.forEach(function (v, i) { if (world[i] === REPEATER) reps.push(i); });
+    for (var r = 0; r < reps.length; r++) {
+      var ri = reps[r];
+      if (repOn.has(ri)) continue;
+      var d = meta[ri] & 7;
+      var p = decode(ri);
+      var bx = p[0] - DIRS[d][0], by = p[1] - DIRS[d][1], bz = p[2] - DIRS[d][2];
+      if (bx < 0 || bx >= WORLD_W || by < 0 || by >= WORLD_H || bz < 0 || bz >= WORLD_D) continue;
+      var bi = idx(bx, by, bz);
+      var inp = 0;
+      if (world[bi] === REDSTONE_WIRE) inp = np.get(bi) || 0;
+      else inp = sourcePower(bi);
+      if (inp <= 0) continue;
+      repOn.set(ri, ri);
+      var fx = p[0] + DIRS[d][0], fy = p[1] + DIRS[d][1], fz = p[2] + DIRS[d][2];
+      if (fx >= 0 && fx < WORLD_W && fy >= 0 && fy < WORLD_H && fz >= 0 && fz < WORLD_D) {
+        push(idx(fx, fy, fz), 15);
+      }
+      while (queue.length) {
+        var qi2 = queue.shift(), qp2 = queue.shift();
+        var n2 = neighborIdxs(qi2);
+        for (var q2 = 0; q2 < n2.length; q2++) push(n2[q2], qp2 - 1);
+      }
+      changed = true;
+    }
+    if (!changed) break;
+  }
+
+  // Update the consumers
+  var dirtyList = [];
+  function neighborPower(i) {
+    var p = decode(i);
+    var nbs = neighborIdxs(i), best = 0;
+    for (var n = 0; n < nbs.length; n++) {
+      var ni = nbs[n];
+      var v = 0;
+      if (world[ni] === REDSTONE_WIRE) v = np.get(ni) || 0;
+      else if (world[ni] === REPEATER) {
+        // A repeater only outputs to its front face
+        if (repOn.has(ni)) {
+          var d = meta[ni] & 7;
+          var rp = decode(ni);
+          if (rp[0] + DIRS[d][0] === p[0] && rp[1] + DIRS[d][1] === p[1] && rp[2] + DIRS[d][2] === p[2]) v = 15;
+        }
+      } else v = sourcePower(ni);
+      if (v > best) best = v;
+    }
+    return best;
+  }
+  rsSet.forEach(function (v, i) {
+    var id = world[i];
+    if (id === LAMP) {
+      var on = neighborPower(i) > 0 ? 1 : 0;
+      if (on !== ((meta[i] >> 3) & 1)) {
+        meta[i] = (meta[i] & ~8) | (on << 3);
+        dirtyList.push(i);
+      }
+    } else if (id === REPEATER) {
+      var on2 = repOn.has(i) ? 1 : 0;
+      if (on2 !== ((meta[i] >> 3) & 1)) { meta[i] = (meta[i] & ~8) | (on2 << 3); dirtyList.push(i); }
+    } else if (id === TNT) {
+      if (neighborPower(i) > 0) ignite(i, 2.5);
+    } else if (id === PISTON) {
+      var on3 = neighborPower(i) > 0 ? 1 : 0;
+      if (on3 !== ((meta[i] >> 3) & 1)) { setPiston(i, on3 === 1); dirtyList.push(i); }
+    }
+  });
+
+  // Only wire whose power actually changed triggers a chunk rebuild
+  np.forEach(function (v, k) { if ((old.get(k) || 0) !== v) dirtyList.push(k); });
+  old.forEach(function (v, k) { if (!np.has(k)) dirtyList.push(k); });
+  rsPower = np;
+
+  for (var dl = 0; dl < dirtyList.length; dl++) {
+    var pp = decode(dirtyList[dl]);
+    markDirty(pp[0], pp[2]);
+  }
+}
+
+/* ======================= 10. Pistons ======================= */
+
+function isPushable(id) {
+  return id !== AIR && id !== WATER && id !== PISTON_ARM && id !== PISTON && isFull(id);
+}
+function setPiston(i, on) {
+  var p = decode(i);
+  var d = meta[i] & 7;
+  var dv = DIRS[d];
+  var fx = p[0] + dv[0], fy = p[1] + dv[1], fz = p[2] + dv[2];
+  meta[i] = (meta[i] & ~8) | (on ? 8 : 0);
+  if (!inWorld(fx, fy, fz)) { markDirty(p[0], p[2]); return; }
+  if (on) {
+    var fid = getBlock(fx, fy, fz);
+    if (fid === AIR || fid === WATER) {
+      setBlock(fx, fy, fz, PISTON_ARM, d);
+    } else if (isPushable(fid) && fy > 1) {
+      var bx = fx + dv[0], by = fy + dv[1], bz = fz + dv[2];
+      var bid = getBlock(bx, by, bz);
+      if (inWorld(bx, by, bz) && (bid === AIR || bid === WATER)) {
+        var fm = meta[idx(fx, fy, fz)];
+        setBlock(bx, by, bz, fid, fm);
+        setBlock(fx, fy, fz, PISTON_ARM, d);
+        markDirty(bx, bz);
+      }
+    }
+  } else {
+    if (getBlock(fx, fy, fz) === PISTON_ARM) setBlock(fx, fy, fz, AIR, 0);
+  }
+  markDirty(p[0], p[2]);
+  markDirty(fx, fz);
+}
+
+/* ======================= 11. TNT & Explosions ======================= */
+
+var flashEl = document.getElementById('flash');
+var shake = 0;
+
+function ignite(i, t) {
+  if (tntFuse.has(i)) return;
+  if (world[i] !== TNT) return;
+  meta[i] = (meta[i] & ~8) | 8;
+  tntFuse.set(i, t);
+  var p = decode(i);
+  markDirty(p[0], p[2]);
+}
+
+function explode(cx, cy, cz) {
+  var R = 4.2;
+  var ri = Math.ceil(R);
+  for (var dx = -ri; dx <= ri; dx++) {
+    for (var dy = -ri; dy <= ri; dy++) {
+      for (var dz = -ri; dz <= ri; dz++) {
+        var dd = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        if (dd > R) continue;
+        if (dd > R - 0.9 && hash2(cx + dx, cz + dz, SEED + dy) > 0.45) continue;  // Randomised rim, so the crater is irregular
+        var x = cx + dx, y = cy + dy, z = cz + dz;
+        if (!inWorld(x, y, z) || y <= 0) continue;    // Keep the bedrock layer
+        var i = idx(x, y, z);
+        var id = world[i];
+        if (id === AIR) continue;
+        if (id === TNT) { setBlock(x, y, z, AIR, 0); igniteNear(x, y, z); continue; }
+        setBlock(x, y, z, AIR, 0);
+      }
+    }
+  }
+  markDirty(cx, cz);
+  // Knock the player around
+  var pd = Math.sqrt(Math.pow(player.x - (cx + 0.5), 2) + Math.pow(player.y + 0.9 - (cy + 0.5), 2) +
+                     Math.pow(player.z - (cz + 0.5), 2));
+  if (pd < 7) {
+    var k = (7 - pd) / 7;
+    player.vy += 9 * k;
+    player.vx += (player.x - cx) * 0.9 * k;
+    player.vz += (player.z - cz) * 0.9 * k;
+    shake = Math.min(1, shake + k);
+  }
+  flashEl.style.transition = 'none';
+  flashEl.style.opacity = '0.85';
+  setTimeout(function () { flashEl.style.transition = 'opacity .5s'; flashEl.style.opacity = '0'; }, 30);
+}
+
+function igniteNear(x, y, z) {
+  for (var dx = -2; dx <= 2; dx++) for (var dy = -2; dy <= 2; dy++) for (var dz = -2; dz <= 2; dz++) {
+    var nx = x + dx, ny = y + dy, nz = z + dz;
+    if (!inWorld(nx, ny, nz)) continue;
+    if (world[idx(nx, ny, nz)] === TNT) ignite(idx(nx, ny, nz), 0.4 + hash2(nx, nz, ny) * 0.5);
+  }
+}
+
+function updateTNT(dt) {
+  if (!tntFuse.size) return;
+  var boom = [], keysArr = [];
+  tntFuse.forEach(function (v, k) { keysArr.push(k); });
+  for (var i = 0; i < keysArr.length; i++) {
+    var k = keysArr[i];
+    var t = tntFuse.get(k) - dt;
+    if (t <= 0) { boom.push(k); tntFuse['delete'](k); }
+    else {
+      tntFuse.set(k, t);
+      // Blink as a warning
+      var fl = Math.floor(t * 6) % 2;
+      var cur = (meta[k] >> 4) & 1;
+      if (fl !== cur) {
+        meta[k] = (meta[k] & ~16) | (fl << 4);
+        var p = decode(k);
+        markDirty(p[0], p[2]);
+      }
+    }
+  }
+  for (var b = 0; b < boom.length; b++) {
+    var pp = decode(boom[b]);
+    setBlock(pp[0], pp[1], pp[2], AIR, 0);
+    explode(pp[0], pp[1], pp[2]);
+  }
+}
+
+/* ======================= 11b. Fire & Flint and Steel ======================= */
+
+var FIRE_LIFE = 5.0;          // How long fire naturally lasts (seconds)
+
+// Light a fire at the given spot; returns whether it worked
+function setFire(x, y, z) {
+  if (!inWorld(x, y, z)) return false;
+  var i = idx(x, y, z);
+  if (world[i] !== AIR) return false;
+  if (y > 0 && !isCollide(world[idx(x, y - 1, z)])) return false;   // Needs a solid block to sit on
+  setBlock(x, y, z, FIRE, 0);
+  fireSet.set(i, FIRE_LIFE);
+  markDirty(x, z);
+  return true;
+}
+
+// Right-click behaviour while holding flint and steel: ignite TNT outright, otherwise start a fire outside the targeted face
+function useFlint(h) {
+  if (!h) { say('Flint & Steel: right-click TNT or the ground'); return; }
+  var hi = idx(h.x, h.y, h.z);
+  if (world[hi] === TNT) {
+    ignite(hi, 2.5);
+    say('Lit! TNT blows up in 2.5 seconds');
+    return;
+  }
+  var fx = h.x + h.nx, fy = h.y + h.ny, fz = h.z + h.nz;
+  if (!(h.nx || h.ny || h.nz)) { fx = h.x; fy = h.y + 1; fz = h.z; }   // Fallback: place it above
+  if (setFire(fx, fy, fz)) say('Fire lit (it will set off adjacent TNT)');
+  else say('Nothing to burn here (needs a free space on a solid block)');
+}
+
+function updateFire(dt) {
+  if (!fireSet.size) return;
+  var keysArr = [];
+  fireSet.forEach(function (v, k) { keysArr.push(k); });
+  for (var a = 0; a < keysArr.length; a++) {
+    var i = keysArr[a];
+    if (world[i] !== FIRE) { fireSet['delete'](i); continue; }
+    var p = decode(i);
+
+    // Immersed in water, or its support is gone → goes out at once
+    var wet = false;
+    for (var d = 0; d < 6; d++) {
+      var nx = p[0] + DIRS[d][0], ny = p[1] + DIRS[d][1], nz = p[2] + DIRS[d][2];
+      if (inWorld(nx, ny, nz) && world[idx(nx, ny, nz)] === WATER) { wet = true; break; }
+    }
+    var below = p[1] > 0 ? world[idx(p[0], p[1] - 1, p[2])] : STONE;
+    var t = fireSet.get(i) - dt;
+    if (wet || !isCollide(below)) t = -1;
+
+    if (t <= 0) {
+      setBlock(p[0], p[1], p[2], AIR, 0);
+      markDirty(p[0], p[2]);
+      continue;
+    }
+    fireSet.set(i, t);
+
+    // Flicker
+    var fl = Math.floor(t * 9) % 2;
+    if (fl !== (meta[i] & 1)) {
+      meta[i] = (meta[i] & ~1) | fl;
+      markDirty(p[0], p[2]);
+    }
+    // Ignite adjacent TNT
+    for (var d2 = 0; d2 < 6; d2++) {
+      var tx = p[0] + DIRS[d2][0], ty = p[1] + DIRS[d2][1], tz = p[2] + DIRS[d2][2];
+      if (inWorld(tx, ty, tz) && world[idx(tx, ty, tz)] === TNT) {
+        ignite(idx(tx, ty, tz), 1.0 + hash2(tx, tz, ty) * 0.8);
+      }
+    }
+  }
+}
+
+/* ======================= 12. Water ======================= */
+
+var waterTimer = 0;
+var HDIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+
+// Only water near the player is simulated, distant water is frozen: cheaper, and it stops water from running into not-yet-generated terrain and spreading forever
+var WATER_SIM_R = 84, WATER_SIM_R2 = WATER_SIM_R * WATER_SIM_R;
+
+function chunkGenDone(cx, cz) {
+  if (cx < 0 || cx >= CHUNKS_X || cz < 0 || cz >= CHUNKS_Z) return false;
+  return chunks[cx][cz].gen;
+}
+
+// Scratch level buffer for the BFS: addressed by block index, an order of magnitude faster than a Map.
+// Convention: 0 = not fed by any source this tick; afterwards only the cells we wrote are cleared.
+var wlv = new Uint8Array(WORLD_W * WORLD_H * WORLD_D);
+
+/* Water semantics (incremental flavour, closer to how Minecraft feels):
+   · Source blocks (meta bit4) stay pinned at the full level WATER_MAX and only "supply"
+   · Each tick runs a single synchronous relaxation: a cell may only accept level-1 water from a neighbour
+     → water creeps outwards one block at a time instead of flooding everything at once
+   · Water cut off from its source loses 1 level per tick and slowly dries up
+   · Falling water (air or water below) only travels down, never sideways → a waterfall is a column, not a cone */
+function updateWater() {
+  if (!waterSet.size) return;
+  var px = player.x, pz = player.z;
+  var act = [], touched = [];
+  var a, i, k, x, y, z, t;
+
+  // 1) Collect the water cells simulated this tick
+  waterSet.forEach(function (v, i2) {
+    if (world[i2] !== WATER) { waterSet['delete'](i2); return; }
+    var xx = i2 % WORLD_W, tt = (i2 / WORLD_W) | 0;
+    var yy = (tt / WORLD_D) | 0, zz = tt % WORLD_D;
+    var ddx = xx + 0.5 - px, ddz = zz + 0.5 - pz;
+    if (ddx * ddx + ddz * ddz > WATER_SIM_R2) return;                 // Too far: frozen
+    if (!chunkGenDone((xx / CHUNK) | 0, (zz / CHUNK) | 0)) return;    // Terrain not generated yet
+    act.push(i2);
+  });
+  if (!act.length) return;
+
+  // 2) Synchronous relaxation: new levels always come from the previous tick's levels, so water advances one block per tick
+  for (a = 0; a < act.length; a++) {
+    i = act[a];
+    var m = meta[i];
+    var old = m & 15;
+    var L;
+    if ((m >> 4) & 1) {
+      L = WATER_MAX;                       // A source
+    } else {
+      L = old > 0 ? old - 1 : 0;           // Decay one level first (only really drops once cut off from the source)
+      x = i % WORLD_W; t = (i / WORLD_W) | 0;
+      y = (t / WORLD_D) | 0; z = t % WORLD_D;
+
+      // Water above → this is a falling column, inherit the level above outright (no decay)
+      if (y < WORLD_H - 1) {
+        var ui = i + YSTRIDE;
+        if (world[ui] === WATER) {
+          var ul = meta[ui] & 15;
+          if (ul > L) L = ul;
+        }
+      }
+      // Take level-1 from horizontal neighbours (only water that has "landed" spreads sideways)
+      var below = (y > 0) ? world[i - YSTRIDE] : STONE;
+      if (below !== AIR && below !== WATER) {
+        for (k = 0; k < 4; k++) {
+          var nx = x + HDIRS[k][0], nz = z + HDIRS[k][1];
+          if (nx < 0 || nx >= WORLD_W || nz < 0 || nz >= WORLD_D) continue;
+          var ni = idx(nx, y, nz);
+          if (world[ni] !== WATER) continue;
+          var nl = (meta[ni] & 15) - 1;
+          if (nl > L) L = nl;
+        }
+      }
+    }
+    if (!L && !((m >> 4) & 1)) L = 0;
+    wlv[i] = L; touched.push(i);
+  }
+
+  // 3) Write back: non-source cells that drop to level zero disappear
+  for (a = 0; a < touched.length; a++) {
+    i = touched[a];
+    var L2 = wlv[i]; wlv[i] = 0;
+    if (world[i] !== WATER) { waterSet['delete'](i); continue; }
+    if (!L2) {
+      if ((meta[i] >> 4) & 1) { meta[i] = WATER_MAX | 16; continue; }   // Fallback: a source never disappears
+      var p3 = decode(i);
+      setBlock(p3[0], p3[1], p3[2], AIR, 0);
+      markDirty(p3[0], p3[2]);
+      continue;
+    }
+    var nm = L2 | (isSource(meta[i]) ? 16 : 0);
+    if (meta[i] !== nm) {
+      meta[i] = nm;
+      var tx = i % WORLD_W, tt = (i / WORLD_W) | 0;
+      markDirty(tx, tt % WORLD_D);
+    }
+  }
+
+  // 4) Spread: only one block outwards per tick, so water opens up ring by ring
+  for (a = 0; a < act.length; a++) {
+    i = act[a];
+    if (world[i] !== WATER) continue;
+    x = i % WORLD_W; t = (i / WORLD_W) | 0;
+    y = (t / WORLD_D) | 0; z = t % WORLD_D;
+    var mi = meta[i], sl2 = mi & 15;
+    if (!sl2) continue;
+    if (!chunkGenDone((x / CHUNK) | 0, (z / CHUNK) | 0)) continue;
+
+    var dl2 = ((mi >> 4) & 1) ? WATER_MAX - 1 : sl2;    // One level lower at the foot of a source
+    if (dl2 < 1) dl2 = 1;
+
+    // Nothing underfoot → fall first (falling wins, so a waterfall is a column and not a cone)
+    if (y > 0 && world[i - YSTRIDE] === AIR) {
+      setBlock(x, y - 1, z, WATER, dl2);
+      markDirty(x, z);
+      continue;
+    }
+    // Already landed → spread one block into surrounding empty cells (level 1 is the outermost ring and goes no further)
+    if (sl2 <= 1) continue;
+    if (y <= 0 || !isCollide(world[i - YSTRIDE])) continue;
+    var nl2 = sl2 - 1;
+    for (k = 0; k < 4; k++) {
+      var nx2 = x + HDIRS[k][0], nz2 = z + HDIRS[k][1];
+      if (nx2 < 0 || nx2 >= WORLD_W || nz2 < 0 || nz2 >= WORLD_D) continue;
+      if (world[idx(nx2, y, nz2)] !== AIR) continue;
+      if (!chunkGenDone((nx2 / CHUNK) | 0, (nz2 / CHUNK) | 0)) continue;
+      if (y > 0 && !isCollide(world[idx(nx2, y - 1, nz2)])) continue;   // The neighbour must have something solid underneath to hold the water
+      setBlock(nx2, y, nz2, WATER, nl2);
+      markDirty(nx2, nz2);
+    }
+  }
+}
+
+/* ======================= 13. Player ======================= */
+
+var player = {
+  x: WORLD_W / 2 + 0.5, y: 0, z: WORLD_D / 2 + 0.5,
+  vx: 0, vy: 0, vz: 0, yaw: 0.6, pitch: -0.12,
+  onGround: false, fly: false
+};
+var EYE = 1.62, HALF = 0.3, HEIGHT = 1.8;
+
+// Find a spawn point: grass or sand on top, clear headroom, not underwater
+function findSpawn() {
+  var cx = Math.floor(WORLD_W / 2), cz = Math.floor(WORLD_D / 2);
+  for (var r = 0; r < 40; r++) {
+    for (var a = 0; a < 24; a++) {
+      var ang = (a / 24) * Math.PI * 2;
+      var x = Math.round(cx + Math.cos(ang) * r * 3), z = Math.round(cz + Math.sin(ang) * r * 3);
+      if (x < 2 || x >= WORLD_W - 2 || z < 2 || z >= WORLD_D - 2) continue;
+      ensureGen(Math.floor(x / CHUNK), Math.floor(z / CHUNK));
+      var y;
+      for (y = WORLD_H - 1; y > 0; y--) if (isSolid(x, y, z)) break;
+      if (y < 3 || y >= WORLD_H - 6) continue;
+      var top = getBlock(x, y, z);
+      if (top !== GRASS && top !== SAND) continue;                 // Grass or sand only
+      if (getBlock(x, y + 1, z) !== AIR || getBlock(x, y + 2, z) !== AIR) continue;  // Headroom must be clear
+      var wet = false;
+      for (var d = 0; d < 4; d++) {                                 // No water nearby
+        var nx = x + HDIRS[d][0] * 2, nz = z + HDIRS[d][1] * 2;
+        if (getBlock(nx, y, nz) === WATER || getBlock(nx, y + 1, nz) === WATER) { wet = true; break; }
+      }
+      if (wet) continue;
+      return [x + 0.5, y + 1.2, z + 0.5];
+    }
+  }
+  return [WORLD_W / 2 + 0.5, BASE_H + 16, WORLD_D / 2 + 0.5];       // Fallback
+}
+
+function spawnPlayer() {
+  var sx = Math.floor(player.x), sz = Math.floor(player.z), y;
+  ensureGen(Math.floor(sx / CHUNK), Math.floor(sz / CHUNK));
+  for (y = WORLD_H - 1; y > 0; y--) if (isSolid(sx, y, sz)) break;
+  player.y = y + 1.2;
+  player.vx = player.vy = player.vz = 0;
+}
+
+function hitTest() {
+  var x0 = Math.floor(player.x - HALF + 1e-4), x1 = Math.floor(player.x + HALF - 1e-4);
+  var y0 = Math.floor(player.y + 1e-4), y1 = Math.floor(player.y + HEIGHT - 1e-4);
+  var z0 = Math.floor(player.z - HALF + 1e-4), z1 = Math.floor(player.z + HALF - 1e-4);
+  for (var x = x0; x <= x1; x++)
+    for (var y = y0; y <= y1; y++)
+      for (var z = z0; z <= z1; z++)
+        if (isSolid(x, y, z)) return true;
+  return false;
+}
+
+function moveAxis(axis, delta) {
+  if (delta === 0) return;
+  var key = ['x', 'y', 'z'][axis];
+  player[key] += delta;
+  if (!hitTest()) return;
+  if (axis === 1) {
+    if (delta < 0) { player.y = Math.floor(player.y) + 1; player.onGround = true; }
+    else { player.y = Math.floor(player.y + HEIGHT) - HEIGHT - 1e-3; }
+    player.vy = 0;
+  } else {
+    if (delta > 0) player[key] = Math.floor(player[key] + HALF) - HALF - 1e-3;
+    else player[key] = Math.floor(player[key] - HALF) + 1 + HALF + 1e-3;
+    if (axis === 0) player.vx = 0; else player.vz = 0;
+  }
+}
+
+function inWater() {
+  var x = Math.floor(player.x), z = Math.floor(player.z);
+  return getBlock(x, Math.floor(player.y + 0.4), z) === WATER ||
+         getBlock(x, Math.floor(player.y + 1.6), z) === WATER;
+}
+
+function updatePlayer(dt) {
+  var swim = inWater();
+  var speed = player.fly ? 20 : (keys['ShiftLeft'] || keys['ShiftRight'] ? 9.0 : 4.9);
+  if (swim && !player.fly) speed *= 0.62;
+
+  var fx = -Math.sin(player.yaw), fz = -Math.cos(player.yaw);
+  var rx = Math.cos(player.yaw), rz = -Math.sin(player.yaw);
+  var mx = 0, mz = 0;
+  if (keys['KeyW']) { mx += fx; mz += fz; }
+  if (keys['KeyS']) { mx -= fx; mz -= fz; }
+  if (keys['KeyD']) { mx += rx; mz += rz; }
+  if (keys['KeyA']) { mx -= rx; mz -= rz; }
+  var len = Math.hypot(mx, mz);
+  if (len > 0) { mx = mx / len * speed; mz = mz / len * speed; }
+
+  var accel = player.fly ? 1 : (player.onGround ? 0.32 : 0.12);
+  player.vx += (mx - player.vx) * Math.min(1, accel * dt * 12);
+  player.vz += (mz - player.vz) * Math.min(1, accel * dt * 12);
+
+  if (player.fly) {
+    var vy = 0;
+    if (keys['Space']) vy += speed;
+    if (keys['ControlLeft'] || keys['ShiftLeft']) vy -= speed;
+    player.vy += (vy - player.vy) * Math.min(1, dt * 12);
+  } else if (swim) {
+    var want = keys['Space'] ? 4.0 : -1.1;
+    player.vy += (want - player.vy) * Math.min(1, dt * 6);
+  } else {
+    player.vy -= 26 * dt;
+    if (keys['Space'] && player.onGround) { player.vy = 8.4; player.onGround = false; }
+    if (player.vy < -50) player.vy = -50;
+  }
+
+  player.onGround = false;
+  moveAxis(0, player.vx * dt);
+  moveAxis(2, player.vz * dt);
+  moveAxis(1, player.vy * dt);
+
+  player.x = Math.max(1.5, Math.min(WORLD_W - 1.5, player.x));
+  player.z = Math.max(1.5, Math.min(WORLD_D - 1.5, player.z));
+  if (player.y < -8) spawnPlayer();
+}
+
+/* ======================= 14. Picking & Interaction ======================= */
+
+var hitResult = null;
+
+function raycast(ox, oy, oz, dx, dy, dz, maxDist) {
+  var x = Math.floor(ox), y = Math.floor(oy), z = Math.floor(oz);
+  var stepX = dx > 0 ? 1 : -1, stepY = dy > 0 ? 1 : -1, stepZ = dz > 0 ? 1 : -1;
+  var tdx = dx !== 0 ? Math.abs(1 / dx) : Infinity;
+  var tdy = dy !== 0 ? Math.abs(1 / dy) : Infinity;
+  var tdz = dz !== 0 ? Math.abs(1 / dz) : Infinity;
+  var tmx = dx !== 0 ? ((dx > 0 ? x + 1 - ox : ox - x) * tdx) : Infinity;
+  var tmy = dy !== 0 ? ((dy > 0 ? y + 1 - oy : oy - y) * tdy) : Infinity;
+  var tmz = dz !== 0 ? ((dz > 0 ? z + 1 - oz : oz - z) * tdz) : Infinity;
+  var nx = 0, ny = 0, nz = 0;
+
+  if (isTarget(getBlock(x, y, z))) return { x: x, y: y, z: z, nx: 0, ny: 0, nz: 0 };
+  for (var i = 0; i < 200; i++) {
+    var t;
+    if (tmx < tmy && tmx < tmz) { x += stepX; t = tmx; tmx += tdx; nx = -stepX; ny = 0; nz = 0; }
+    else if (tmy < tmz) { y += stepY; t = tmy; tmy += tdy; nx = 0; ny = -stepY; nz = 0; }
+    else { z += stepZ; t = tmz; tmz += tdz; nx = 0; ny = 0; nz = -stepZ; }
+    if (t > maxDist) return null;
+    if (y < 0 || y >= WORLD_H) continue;
+    if (x < 0 || x >= WORLD_W || z < 0 || z >= WORLD_D) return null;
+    // Uses isTarget rather than isSolid: levers / wire / repeaters / torches have no hitbox but must still be targetable
+    if (isTarget(getBlock(x, y, z))) return { x: x, y: y, z: z, nx: nx, ny: ny, nz: nz };
+  }
+  return null;
+}
+
+function eyePos() { return [player.x, player.y + EYE, player.z]; }
+function viewDir() {
+  var cp = Math.cos(player.pitch);
+  return [-Math.sin(player.yaw) * cp, Math.sin(player.pitch), -Math.cos(player.yaw) * cp];
+}
+
+function dig() {
+  if (!hitResult) return;
+  var h = hitResult;
+  if (h.y <= 0) return;
+  setBlock(h.x, h.y, h.z, AIR, 0);
+  markDirty(h.x, h.z);
+  rsDirty();
+}
+function rsDirty() { rsTimer = 0; }   // Recompute redstone immediately
+
+// On-screen toast (shows briefly, then fades out)
+var notice = '', noticeT = 0;
+function say(msg, sec) { notice = msg; noticeT = sec || 2.4; }
+
+function placeMetaFor(id) {
+  var fx = -Math.sin(player.yaw), fz = -Math.cos(player.yaw);
+  var d = Math.abs(fx) > Math.abs(fz) ? (fx > 0 ? 0 : 1) : (fz > 0 ? 2 : 3);
+  if (id === WATER) return WATER_MAX | 16;
+  if (id === LEVER || id === REPEATER || id === PISTON) return d;
+  return 0;
+}
+
+function place() {
+  if (!hitResult) return;
+  var h = hitResult;
+  var hi = idx(h.x, h.y, h.z);
+  var hid = world[hi];
+  var cur = PAGES[page][sel];
+
+  // Flint and steel is a tool, not a placeable block: handle it first
+  if (cur === FLINT_STEEL) { useFlint(h); return; }
+
+  // Right-click interaction: toggle levers, adjust repeater delay
+  if (hid === LEVER) {
+    meta[hi] ^= 8; markDirty(h.x, h.z); rsTimer = 0; return;
+  }
+  if (hid === REPEATER) {
+    var dl = ((meta[hi] >> 4) & 3) + 1;
+    dl = dl >= 4 ? 1 : dl + 1;
+    meta[hi] = (meta[hi] & ~48) | (dl << 4);
+    markDirty(h.x, h.z); rsTimer = 0; return;
+  }
+
+  var px = h.x + h.nx, py = h.y + h.ny, pz = h.z + h.nz;
+  if (!inWorld(px, py, pz)) return;
+  var target = getBlock(px, py, pz);
+  if (target !== AIR && target !== WATER) return;
+  // Do not wall yourself in
+  var x0 = Math.floor(player.x - HALF + 1e-4), x1 = Math.floor(player.x + HALF - 1e-4);
+  var y0 = Math.floor(player.y + 1e-4), y1 = Math.floor(player.y + HEIGHT - 1e-4);
+  var z0 = Math.floor(player.z - HALF + 1e-4), z1 = Math.floor(player.z + HALF - 1e-4);
+  if (px >= x0 && px <= x1 && py >= y0 && py <= y1 && pz >= z0 && pz <= z1) return;
+  // Redstone wire needs solid support (the block below must be solid)
+  if (cur === REDSTONE_WIRE && py > 0 && !isSolid(px, py - 1, pz)) return;
+  if ((cur === LEVER || cur === REPEATER || cur === REDSTONE_TORCH) && py > 0 && !isSolid(px, py - 1, pz)) return;
+
+  setBlock(px, py, pz, cur, placeMetaFor(cur));
+  markDirty(px, pz);
+  rsTimer = 0;
+}
+
+/* ======================= 15. Input & UI ======================= */
+
+var keys = {};
+var page = 0, sel = 0;
+var running = false;
+
+document.addEventListener('keydown', function (e) {
+  keys[e.code] = true;
+  if (e.code === 'Space' || e.code.indexOf('Arrow') === 0 || e.code === 'Tab') e.preventDefault();
+  if (e.code === 'KeyF') player.fly = !player.fly;
+  if (e.code === 'Tab') { page = (page + 1) % PAGES.length; sel = 0; buildHotbar(); }
+  if (e.code === 'KeyR') { page = 1; sel = 0; buildHotbar(); }
+  if (e.code === 'KeyH') {
+    var mm = document.getElementById('mask');
+    mm.style.display = (mm.style.display === 'none') ? 'flex' : 'none';
+    if (mm.style.display === 'flex' && running) { running = false; }
+  }
+  var n = ['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7', 'Digit8', 'Digit9', 'Digit0'].indexOf(e.code);
+  if (n >= 0 && n < PAGES[page].length) { sel = n; buildHotbar(); }
+});
+document.addEventListener('keyup', function (e) { keys[e.code] = false; });
+
+var mouseHeld = 0, holdTimer = 0;
+canvas.addEventListener('mousedown', function (e) {
+  if (!running) return;
+  if (e.button === 0) { mouseHeld = 1; dig(); }
+  else if (e.button === 2) { mouseHeld = 2; place(); }
+  holdTimer = 0.22;
+});
+document.addEventListener('mouseup', function () { mouseHeld = 0; });
+canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+document.addEventListener('wheel', function (e) {
+  if (!running) return;
+  var n = PAGES[page].length;
+  sel = (sel + (e.deltaY > 0 ? 1 : -1) + n) % n;
+  buildHotbar();
+}, { passive: true });
+
+document.addEventListener('mousemove', function (e) {
+  if (!running) return;
+  var s = 0.0022;
+  player.yaw -= e.movementX * s;
+  player.pitch -= e.movementY * s;
+  var lim = Math.PI / 2 - 0.001;
+  player.pitch = Math.max(-lim, Math.min(lim, player.pitch));
+});
+
+var mask = document.getElementById('mask');
+var wasLocked = false;
+var started = false;
+
+function start() {
+  if (!started) {
+    // First run: generate and build the chunks around spawn first, so you never open your eyes on an empty world
+    mask.querySelector('.go').textContent = 'Generating world…';
+    setTimeout(function () {
+      var t0 = (performance && performance.now) ? performance.now() : Date.now();
+      var sp = findSpawn();
+      player.x = sp[0]; player.y = sp[1]; player.z = sp[2];
+      spawnPlayer();
+      preloadAround(Math.floor(player.x / CHUNK), Math.floor(player.z / CHUNK), 4);
+      var t1 = (performance && performance.now) ? performance.now() : Date.now();
+      console.log('World ready in', Math.round(t1 - t0), 'ms');
+      started = true;
+      mask.querySelector('.go').textContent = 'Click to start';
+      mask.style.display = 'none';
+      running = true;
+      if (canvas.requestPointerLock) canvas.requestPointerLock();
+    }, 30);
+    return;
+  }
+  running = true;
+  mask.style.display = 'none';
+  if (canvas.requestPointerLock) canvas.requestPointerLock();
+}
+
+// Synchronously build every chunk inside radius r (startup only)
+function preloadAround(cx, cz, r) {
+  for (var a = cx - r - 1; a <= cx + r + 1; a++) {
+    if (a < 0 || a >= CHUNKS_X) continue;
+    for (var b = cz - r - 1; b <= cz + r + 1; b++) {
+      if (b < 0 || b >= CHUNKS_Z) continue;
+      ensureGen(a, b);
+    }
+  }
+  for (var i = 0; i <= r; i++) {
+    for (var x2 = cx - i; x2 <= cx + i; x2++) {
+      for (var z2 = cz - i; z2 <= cz + i; z2++) {
+        if (Math.abs(x2 - cx) !== i && Math.abs(z2 - cz) !== i) continue;
+        if (x2 < 0 || x2 >= CHUNKS_X || z2 < 0 || z2 >= CHUNKS_Z) continue;
+        uploadChunk(chunks[x2][z2]);
+      }
+    }
+  }
+}
+
+mask.addEventListener('click', start);
+canvas.addEventListener('click', function () {
+  if (!running) { start(); return; }
+  if (document.pointerLockElement !== canvas && canvas.requestPointerLock) canvas.requestPointerLock();
+});
+document.addEventListener('pointerlockchange', function () {
+  var locked = document.pointerLockElement === canvas;
+  if (!locked && wasLocked) { running = false; mask.style.display = 'flex'; }
+  wasLocked = locked;
+});
+
+var slotsEl = document.getElementById('slots');
+var pageNameEl = document.getElementById('pageName');
+var SWATCH = {};
+SWATCH[GRASS] = '#6aa83e'; SWATCH[DIRT] = '#8a5d3b'; SWATCH[STONE] = '#8e8e92'; SWATCH[SAND] = '#e2d6a0';
+SWATCH[WOOD] = '#6b4f2a'; SWATCH[LEAVES] = '#468230'; SWATCH[GLASS] = '#cfe6f2'; SWATCH[WATER] = '#3a6ec4';
+SWATCH[TNT] = '#c0392b'; SWATCH[REDSTONE_ORE] = '#8e8e92'; SWATCH[REDSTONE_WIRE] = '#b03028';
+SWATCH[REDSTONE_TORCH] = '#d94b32'; SWATCH[REDSTONE_BLOCK] = '#c0281f'; SWATCH[LEVER] = '#8a8a8e';
+SWATCH[REPEATER] = '#a0a0a8'; SWATCH[LAMP] = '#d8c9a8'; SWATCH[PISTON] = '#96969c';
+SWATCH[FIRE] = '#e8712a'; SWATCH[FLINT_STEEL] = '#c8a24a';
+
+function buildHotbar() {
+  pageNameEl.textContent = PAGE_NAME[page] + ' (Tab to switch)';
+  slotsEl.innerHTML = '';
+  for (var i = 0; i < PAGES[page].length; i++) {
+    var id = PAGES[page][i];
+    var el = document.createElement('div');
+    el.className = 'slot' + (i === sel ? ' sel' : '');
+    el.style.background = 'linear-gradient(160deg,' + SWATCH[id] + ',rgba(0,0,0,.4))';
+    el.innerHTML = '<i>' + ((i + 1) % 10) + '</i>' + BLOCK_NAME[id];
+    slotsEl.appendChild(el);
+  }
+}
+buildHotbar();
+
+var hud = document.getElementById('hud');
+var tip = document.getElementById('tip');
+tip.innerHTML =
+  '<b>Ignition</b><br>Hold <b>Flint &amp; Steel</b> and right-click TNT to light it<br>or right-click the ground to start a fire (it sets off adjacent TNT)<br>' +
+  'TNT can also be fired by a <b>redstone signal</b><br><br>' +
+  '<b>Redstone basics</b><br>Lever / Redstone Block / Torch supply power<br>Redstone Wire carries it (loses 1 per block)<br>' +
+  'Repeaters refill the signal and direct it<br>Lamp · TNT · Piston act as loads';
+
+var fps = 0, frames = 0, fpsTime = 0;
+
+/* ======================= 16. Render Loop ======================= */
+
+var proj = new Float32Array(16), view = new Float32Array(16), vp = new Float32Array(16);
+var FOG_COLOR = [0.53, 0.72, 0.95];
+var WATER_FOG = [0.16, 0.38, 0.62];
+
+function resize() {
+  var dpr = Math.min(window.devicePixelRatio || 1, 2);
+  var w = Math.floor(canvas.clientWidth * dpr), h = Math.floor(canvas.clientHeight * dpr);
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+}
+window.addEventListener('resize', resize);
+
+gl.enable(gl.DEPTH_TEST);
+gl.enable(gl.CULL_FACE);
+gl.cullFace(gl.BACK);
+
+var lastTime = performance.now();
+var gameTime = 0;
+
+function drawChunkBuf(buf, count) {
+  if (!count) return;
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.enableVertexAttribArray(A_POS);
+  gl.vertexAttribPointer(A_POS, 3, gl.FLOAT, false, 40, 0);
+  gl.enableVertexAttribArray(A_UV);
+  gl.vertexAttribPointer(A_UV, 2, gl.FLOAT, false, 40, 12);
+  gl.enableVertexAttribArray(A_LIGHT);
+  gl.vertexAttribPointer(A_LIGHT, 1, gl.FLOAT, false, 40, 20);
+  gl.enableVertexAttribArray(A_COLOR);
+  gl.vertexAttribPointer(A_COLOR, 4, gl.FLOAT, false, 40, 24);
+  gl.drawArrays(gl.TRIANGLES, 0, count);
+}
+
+function frame(now) {
+  var dt = Math.min((now - lastTime) / 1000, 0.05);
+  lastTime = now;
+  gameTime += dt;
+  resize();
+
+  updatePlayer(dt);
+
+  // Timed systems
+  rsTimer -= dt;
+  if (rsTimer <= 0) { rsTimer = 0.1; computeRedstone(); }
+  waterTimer -= dt;
+  if (waterTimer <= 0) { waterTimer = 0.09; updateWater(); }
+  updateTNT(dt);
+  updateFire(dt);
+  if (noticeT > 0) noticeT -= dt;
+
+  var eye = eyePos(), dir = viewDir();
+  hitResult = raycast(eye[0], eye[1], eye[2], dir[0], dir[1], dir[2], REACH);
+
+  if (mouseHeld && running) {
+    holdTimer -= dt;
+    if (holdTimer <= 0) {
+      if (mouseHeld === 1) dig(); else place();
+      holdTimer = 0.22;
+    }
+  }
+
+  // Underwater fog
+  var headIn = getBlock(Math.floor(player.x), Math.floor(player.y + EYE), Math.floor(player.z)) === WATER;
+  var fog = headIn ? WATER_FOG : FOG_COLOR;
+  var near = headIn ? 0.5 : FOG_NEAR, far = headIn ? 14 : FOG_FAR;
+
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.clearColor(fog[0], fog[1], fog[2], 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+  perspective(proj, 75 * Math.PI / 180, canvas.width / canvas.height, 0.1, 300);
+  var sea = [eye[0], eye[1], eye[2]];
+  if (shake > 0.001) {                     // Explosion shake
+    sea[0] += (Math.random() - 0.5) * shake * 0.5;
+    sea[1] += (Math.random() - 0.5) * shake * 0.5;
+    shake *= 0.86;
+  }
+  lookAt(view, sea, [sea[0] + dir[0], sea[1] + dir[1], sea[2] + dir[2]], [0, 1, 0]);
+  mul(vp, proj, view);
+
+  gl.useProgram(blockProg);
+  gl.uniformMatrix4fv(U_VP, false, vp);
+  gl.uniform3fv(U_CAM, eye);
+  gl.uniform1f(U_TIME, gameTime);
+  gl.uniform3f(U_FOG, fog[0], fog[1], fog[2]);
+  gl.uniform1f(U_NEAR, near);
+  gl.uniform1f(U_FAR, far);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.uniform1i(U_TEX, 0);
+
+  var drawn = 0, tris = 0, drawnT = 0;
+  var i, c;
+  // Streaming: generate terrain + build meshes by distance + free distant chunks
+  var pcxNow = Math.floor(player.x / CHUNK), pczNow = Math.floor(player.z / CHUNK);
+  var pendingN = updateChunks(eye, dir);
+
+  // Opaque pass
+  for (i = 0; i < CHUNKS_X; i++) {
+    for (c = 0; c < CHUNKS_Z; c++) {
+      var ch = chunks[i][c];
+      if (!ch.built) continue;
+      if (!ch.co && !ch.ct) continue;
+      if (Math.abs(i - pcxNow) > UNLOAD_R || Math.abs(c - pczNow) > UNLOAD_R) continue;
+      var mx = i * CHUNK + CHUNK / 2, mz = c * CHUNK + CHUNK / 2;
+      var ddx = mx - eye[0], ddz = mz - eye[2];
+      var dist = Math.sqrt(ddx * ddx + ddz * ddz);
+      if (dist > FOG_FAR + CHUNK * 2) continue;
+      if ((ddx * dir[0] + ddz * dir[2]) / (dist || 1) < -0.55 && dist > CHUNK * 2) continue;
+      drawn++;
+      tris += (ch.co + ch.ct) / 3;
+      if (ch.co) drawChunkBuf(ch.bo, ch.co);
+      if (ch.ct) drawnT++;
+    }
+  }
+  // Transparent pass (drawn last, blending on)
+  if (drawnT) {
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    for (i = 0; i < CHUNKS_X; i++) {
+      for (c = 0; c < CHUNKS_Z; c++) {
+        var ch2 = chunks[i][c];
+        if (!ch2.ct) continue;
+        var mx2 = i * CHUNK + CHUNK / 2, mz2 = c * CHUNK + CHUNK / 2;
+        var ddx2 = mx2 - eye[0], ddz2 = mz2 - eye[2];
+        var dist2 = Math.sqrt(ddx2 * ddx2 + ddz2 * ddz2);
+        if (dist2 > FOG_FAR + CHUNK * 2) continue;
+        if ((ddx2 * dir[0] + ddz2 * dir[2]) / (dist2 || 1) < -0.55 && dist2 > CHUNK * 2) continue;
+        drawChunkBuf(ch2.bt, ch2.ct);
+      }
+    }
+    gl.disable(gl.BLEND);
+  }
+
+  // Outline of the selected block
+  if (hitResult && running) {
+    var h = hitResult;
+    var ex = 0.502;
+    var corners = [
+      [h.x + 1 - ex, h.y + 1 - ex, h.z + 1 - ex], [h.x + ex, h.y + 1 - ex, h.z + 1 - ex],
+      [h.x + ex, h.y + 1 - ex, h.z + ex], [h.x + 1 - ex, h.y + 1 - ex, h.z + ex],
+      [h.x + 1 - ex, h.y + ex, h.z + 1 - ex], [h.x + ex, h.y + ex, h.z + 1 - ex],
+      [h.x + ex, h.y + ex, h.z + ex], [h.x + 1 - ex, h.y + ex, h.z + ex]
+    ];
+    var edges = [[0,1],[1,2],[2,3],[3,0],[4,5],[5,6],[6,7],[7,4],[0,4],[1,5],[2,6],[3,7]];
+    var pts = [];
+    for (var e = 0; e < edges.length; e++) {
+      pts.push.apply(pts, corners[edges[e][0]]);
+      pts.push.apply(pts, corners[edges[e][1]]);
+    }
+    for (var q = 0; q < pts.length; q += 3) {
+      pts[q] += (pts[q] - (h.x + 0.5)) * 0.02;
+      pts[q + 1] += (pts[q + 1] - (h.y + 0.5)) * 0.02;
+      pts[q + 2] += (pts[q + 2] - (h.z + 0.5)) * 0.02;
+    }
+    gl.useProgram(lineProg);
+    gl.disableVertexAttribArray(A_UV);
+    gl.disableVertexAttribArray(A_LIGHT);
+    gl.disableVertexAttribArray(A_COLOR);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.uniformMatrix4fv(LU_VP, false, vp);
+    gl.bindBuffer(gl.ARRAY_BUFFER, lineBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(pts), gl.DYNAMIC_DRAW);
+    gl.enableVertexAttribArray(LA_POS);
+    gl.vertexAttribPointer(LA_POS, 3, gl.FLOAT, false, 0, 0);
+    gl.drawArrays(gl.LINES, 0, pts.length / 3);
+    gl.disable(gl.BLEND);
+  }
+
+  frames++; fpsTime += dt;
+  if (fpsTime > 0.5) { fps = Math.round(frames / fpsTime); frames = 0; fpsTime = 0; }
+  var hl = hitResult ? (' ' + hitResult.x + ',' + hitResult.y + ',' + hitResult.z + ' ' + BLOCK_NAME[world[idx(hitResult.x, hitResult.y, hitResult.z)]]) : ' none';
+  hud.innerHTML =
+    '<b>FPS</b> ' + fps + '&nbsp;&nbsp;<b>Chunks</b> ' + drawn + '/' + (LOAD_R * 2 + 1) * (LOAD_R * 2 + 1) +
+    '&nbsp;&nbsp;<b>Pending</b> ' + pendingN + '&nbsp;&nbsp;<b>Tris</b> ' + Math.round(tris) + '<br>' +
+    '<b>Coords</b> ' + player.x.toFixed(0) + ', ' + player.y.toFixed(0) + ', ' + player.z.toFixed(0) +
+    ' / ' + WORLD_W + '×' + WORLD_H + '×' + WORLD_D + '<br>' +
+    '<b>Mode</b> ' + (player.fly ? 'Flying' : (inWater() ? 'Swimming' : 'Survival')) + '&nbsp;&nbsp;<b>Holding</b> ' + BLOCK_NAME[PAGES[page][sel]] + '<br>' +
+    '<b>Target</b>' + hl + '&nbsp;&nbsp;<b>Water/Fire/RS/TNT</b> ' + waterSet.size + '/' + fireSet.size + '/' + rsSet.size + '/' + tntFuse.size +
+    (noticeT > 0 ? '<br><b style="color:#ffe680">' + notice + '</b>' : '');
+
+  requestAnimationFrame(frame);
+}
+
+spawnPlayer();
+resize();
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>
